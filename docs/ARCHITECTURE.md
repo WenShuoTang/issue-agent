@@ -1,7 +1,7 @@
 # 架构设计
 
-本文回答三个问题：**系统怎么跑**、**为什么这样设计**、**哪里做了妥协**。
-面向读者：接手代码的同事、面试官、以及未来想上生产的自己。
+内容包括系统运行方式、关键设计取舍与已知妥协。
+面向接手代码的开发者与部署者。
 
 ---
 
@@ -263,7 +263,7 @@ LLMClient / HeuristicLLM ──记账──► Budget ──超限──► Budg
 ## 10. 并发与异步模型
 
 - FastAPI 同步端点跑在线程池；分析作业用独立的 `ThreadPoolExecutor`，避免阻塞 HTTP 线程。
-- 一次运行 = 一个图实例（编译开销 ~毫秒），从而把 budget / tracer / index 绑定到本次运行。
+- 一次运行 = 一个图实例（编译开销 ~毫秒），把 budget / tracer / index 绑定到本次运行。
 - SSE 通过作业事件缓冲区实现，支持 `Last-Event-ID` 断线重放；不使用长轮询。
 - SQLite 用 WAL + `timeout=5` + 每次操作显式关闭连接（`with sqlite3.Connection` 只提交不关闭，
   Windows 下会漏句柄）。

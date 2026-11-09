@@ -1,8 +1,7 @@
 """OpenTelemetry 风格的轻量 tracer。
 
-为什么自己写：面试里被问最多的是「你怎么观测一个 Agent」，而不是「你装没装
-agentops」。一个 150 行的 tracer 足以覆盖 span 树、耗时、属性、状态与流式事件，
-并可在需要时导出成 OTLP / JSONL，不引入额外运行时依赖。
+自建而非引入额外依赖：约 150 行即可覆盖 span 树、耗时、属性、状态与流式事件，
+并可按需导出 JSONL（接入 OTLP 时替换导出器即可）。
 """
 from __future__ import annotations
 

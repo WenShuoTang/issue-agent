@@ -14,7 +14,8 @@
 
 技术栈：**Python 3.10+ / FastAPI / LangGraph / 多供应商 LLM（DeepSeek、OpenAI、Claude、
 通义千问、Moonshot、智谱、Gemini、本地 Ollama/vLLM 等）/ GitHub REST API /
-SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。无需 Docker、Redis、向量数据库、GPU。
+SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。单机运行不需要 Docker、Redis、
+向量数据库或 GPU；Docker 配置仅作可选部署方式。
 
 ---
 
@@ -132,7 +133,7 @@ OPENAI_API_KEY=sk-...        # 只填所选厂商对应的那一个 Key
 LLM_MODEL=gpt-4o-mini        # 可选，留空用预设默认
 ```
 
-| Provider | 协议 | 默认模型 | Key 变量 |
+| Provider | 协议 | 示例模型 | Key 变量 |
 |---|---|---|---|
 | `deepseek`（默认） | OpenAI 兼容 | `deepseek-flash` | `DEEPSEEK_API_KEY` |
 | `openai` | OpenAI | `gpt-4o-mini` | `OPENAI_API_KEY` |
@@ -318,7 +319,7 @@ docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md PROVIDERS.md SECURIT
 
 ---
 
-## 10. 已知限制（诚实清单）
+## 10. 已知限制
 
 1. 检索语料规模小（单次运行 < 30 篇文档），不是仓库级长期索引；跨 Issue 的长期知识靠 episode 记忆，
    不做全库 embedding。
@@ -361,7 +362,7 @@ docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md PROVIDERS.md SECURIT
 
 ## 13. 许可证与贡献
 
-- 代码采用 [MIT License](LICENSE)。如需 Apache-2.0/AGPL，请替换 `LICENSE` 并在 README 注明。
+- 代码采用 [MIT License](LICENSE)；第三方依赖遵循各自许可证。
 - 贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 - 安全问题请走 [SECURITY.md](SECURITY.md) 的私密渠道，不要开公开 Issue。
 - 提交前请跑：

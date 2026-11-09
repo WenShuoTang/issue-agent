@@ -40,7 +40,7 @@ CI 会执行同样的步骤（见 `.github/workflows/ci.yml`）。
 1. Fork 并新建分支：`feat/short-name` 或 `fix/short-name`。
 2. 一个 PR 只做一件事；说明**问题 → 方案 → 如何验证**。
 3. 如果改了行为，请同步更新 README / docs 中受影响的段落。
-4. 确保 `preflight.py`、单测、离线评测都通过。
+4. `preflight.py`、单测与离线评测均需通过。
 
 ## 报告问题
 

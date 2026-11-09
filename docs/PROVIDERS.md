@@ -15,20 +15,20 @@
 
 ## 1. 支持的供应商
 
-| `LLM_PROVIDER` | 厂商 | 协议 | 默认 Base URL | Key 环境变量 |
-|---|---|---|---|---|
-| `deepseek` | DeepSeek（默认） | OpenAI 兼容 | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
-| `openai` | OpenAI | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
-| `anthropic` | Anthropic Claude | Messages API | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
-| `qwen` | 通义千问（阿里云百炼） | OpenAI 兼容 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` |
-| `moonshot` | Moonshot Kimi | OpenAI 兼容 | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` |
-| `zhipu` | 智谱 GLM | OpenAI 兼容 | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY` |
-| `siliconflow` | SiliconFlow 硅基流动 | OpenAI 兼容 | `https://api.siliconflow.cn/v1` | `SILICONFLOW_API_KEY` |
-| `openrouter` | OpenRouter（聚合） | OpenAI 兼容 | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `gemini` | Google Gemini | OpenAI 兼容端点 | `https://generativelanguage.googleapis.com/v1beta/openai/` | `GEMINI_API_KEY` |
-| `ollama` | 本地 Ollama | OpenAI 兼容 | `http://127.0.0.1:11434/v1` | 无需 Key |
-| `vllm` | 本地 vLLM / 自建服务 | OpenAI 兼容 | `http://127.0.0.1:8000/v1` | 无需 Key |
-| `custom` | 任意 OpenAI 兼容网关 | OpenAI 兼容 | 必须自填 | `LLM_API_KEY` |
+| `LLM_PROVIDER` | 厂商 | 协议 | 示例模型 | Base URL | Key 环境变量 |
+|---|---|---|---|---|---|
+| `deepseek` | DeepSeek（默认） | OpenAI 兼容 | `deepseek-flash` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
+| `openai` | OpenAI | OpenAI | `gpt-4o-mini` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `anthropic` | Anthropic Claude | Messages API | `claude-sonnet-4-5` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| `qwen` | 通义千问（阿里云百炼） | OpenAI 兼容 | `qwen-plus` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` |
+| `moonshot` | Moonshot Kimi | OpenAI 兼容 | `moonshot-v1-8k` | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` |
+| `zhipu` | 智谱 GLM | OpenAI 兼容 | `glm-4-flash` | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY` |
+| `siliconflow` | SiliconFlow 硅基流动 | OpenAI 兼容 | `Qwen/Qwen2.5-7B-Instruct` | `https://api.siliconflow.cn/v1` | `SILICONFLOW_API_KEY` |
+| `openrouter` | OpenRouter（聚合） | OpenAI 兼容 | `deepseek/deepseek-chat` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `gemini` | Google Gemini | OpenAI 兼容端点 | `gemini-2.0-flash` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `GEMINI_API_KEY` |
+| `ollama` | 本地 Ollama | OpenAI 兼容 | `qwen2.5:7b` | `http://127.0.0.1:11434/v1` | 无需 Key |
+| `vllm` | 本地 vLLM / 自建服务 | OpenAI 兼容 | `Qwen/Qwen2.5-7B-Instruct` | `http://127.0.0.1:8000/v1` | 无需 Key |
+| `custom` | 任意 OpenAI 兼容网关 | OpenAI 兼容 | 自填 | 必须自填 | `LLM_API_KEY` |
 
 > 默认模型名只是"能用"的起点，厂商会持续改名/下线。请以各自控制台为准，
 > 用 `LLM_MODEL` 覆盖。预设定义在 `issue_agent/providers.py`，加一行就能支持新厂商。
