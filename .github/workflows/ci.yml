@@ -25,7 +25,7 @@ jobs:
       - name: Eval regression gate (pipeline metrics only)
         run: python -m issue_agent.eval.runner --offline --min-recall 0.5 --min-citation 0.9
       - name: Upload eval report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: eval-report
           path: data/eval/*.json
