@@ -100,6 +100,8 @@ class TestApi(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('id="provider"', html)
         self.assertIn("payload.llm", html)
+        self.assertIn('id="githubToken"', html)
+        self.assertIn("payload.github", html)
         self.assertIn("不保存", html)
 
     def test_meta_exposes_provider_presets(self):
@@ -143,6 +145,29 @@ class TestApi(unittest.TestCase):
                               "llm": {"provider": "openai"}})
         self.assertEqual(response.status_code, 400)
         self.assertIn("需要 API Key", response.json()["error"]["message"])
+
+    def test_github_token_is_used_and_not_echoed(self):
+        token = "ghp_" + "c" * 36
+        with tempfile.TemporaryDirectory() as folder:
+            app, _ = _app(folder, api_keys={VALID_KEY: "acme"})
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/analyze", headers={"X-API-Key": VALID_KEY},
+                    json={"repo": "example/tool", "issue_number": 17,
+                          "github": {"token": token}})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["metrics"]["github_auth"], "user")
+        self.assertNotIn(token, response.text)
+
+    def test_short_github_token_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, _ = _app(folder, api_keys={VALID_KEY: "acme"})
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/analyze", headers={"X-API-Key": VALID_KEY},
+                    json={"repo": "example/tool", "issue_number": 17,
+                          "github": {"token": "short"}})
+        self.assertEqual(response.status_code, 400)
 
     def test_unknown_provider_returns_400(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -110,28 +110,21 @@ SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。单机运行不需要
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt
-cp .env.example .env               # Windows: Copy-Item .env.example .env
-# 编辑 .env：选择 LLM_PROVIDER 并填对应 Key，强烈建议填 GITHUB_TOKEN
-python -m issue_agent.cli doctor
 python -m issue_agent.cli serve --host 127.0.0.1 --port 8000
 ```
 
-打开 <http://127.0.0.1:8000>，示例 `idosal/git-mcp` / `214`（公开 Issue，随时可能变化）。
+打开 <http://127.0.0.1:8000>，在页面上填写**模型 Key** 与 **GitHub Token** 即可开始，
+不需要改代码或 `.env`。示例仓库 `idosal/git-mcp` / `214`（公开 Issue，随时可能变化）。
 
+> `cp .env.example .env` 是可选的：只有希望给服务端设置默认凭据（多人共用、或让访客不填也能用）时才需要。
 > 用 conda 也可以：`conda create -n issue-agent python=3.11 && conda activate issue-agent`。
 
-### 4.1 选择大模型（12 家预设，改一个变量即可）
+### 4.1 选择大模型（前端下拉，12 个预设）
 
 支持 DeepSeek、OpenAI、Anthropic Claude、通义千问、Moonshot、智谱 GLM、SiliconFlow、
 OpenRouter、Gemini、本地 Ollama / vLLM，以及任意 OpenAI 兼容的自建端点。
 
-```ini
-# .env
-LLM_PROVIDER=openai          # deepseek | openai | anthropic | qwen | moonshot | zhipu
-                             # | siliconflow | openrouter | gemini | ollama | vllm | custom
-OPENAI_API_KEY=sk-...        # 只填所选厂商对应的那一个 Key
-LLM_MODEL=gpt-4o-mini        # 可选，留空用预设默认
-```
+在页面「大模型供应商」中选择，填入该厂商的 Key 即可；不选则用服务端默认配置。
 
 | Provider | 协议 | 示例模型 | Key 变量 |
 |---|---|---|---|
@@ -142,60 +135,68 @@ LLM_MODEL=gpt-4o-mini        # 可选，留空用预设默认
 | `moonshot` | OpenAI 兼容 | `moonshot-v1-8k` | `MOONSHOT_API_KEY` |
 | `ollama` | OpenAI 兼容 | `qwen2.5:7b` | 无需 |
 
+服务端默认值（可选，写进 `.env`）：
+
+```ini
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+LLM_MODEL=gpt-4o-mini
+```
+
 完整的 Key 申请步骤、兼容性矩阵（JSON mode / tool calling / thinking）、
 常见报错排查见 **[docs/PROVIDERS.md](docs/PROVIDERS.md)**。
 
-### 4.2 申请 GitHub Token（强烈建议）
+### 4.2 填写 GitHub Token（前端填写，可选）
 
-不配 Token 也能跑，但匿名只有 **60 次/小时**；配了 Token 后是 **5,000 次/小时**。
+不填也能跑，但匿名只有 **60 次/小时**；填了 Token 后是 **5,000 次/小时**，
+并且可以读取你有权限的私有仓库。
 
 1. GitHub → 右上头像 → **Settings** → **Developer settings**；
 2. **Personal access tokens → Fine-grained tokens → Generate new token**；
-3. Repository access 选 **Public repositories (read-only)**；
+3. Repository access 选 **Public repositories (read-only)**（或指定仓库）；
 4. Permissions 只给：**Issues: Read-only**、**Contents: Read-only**、**Metadata: Read-only**
    （可选 **Pull requests: Read-only**）；
-5. 生成后复制 `github_pat_...` 到 `.env` 的 `GITHUB_TOKEN`。
+5. 生成后把 `github_pat_...` 粘贴到页面的 **GitHub Token** 输入框。
 
-验证：
-
-```bash
-python -m issue_agent.cli doctor
-# 或
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/rate_limit
-```
+报告顶部的指标会显示本次是「我的 Token / 服务器 Token / 匿名」。
 
 > Token 只显示一次，请立刻保存；不要提交到 Git。详细步骤（含 classic token 方案与安全建议）
 > 见 [docs/PROVIDERS.md#4-github-token-申请步骤重要](docs/PROVIDERS.md#4-github-token-申请步骤重要)。
 
-### 4.3 在前端使用自己的模型 Key（BYOK）
+### 4.3 自带凭据（BYOK）
 
 ![UI preview](docs/assets/ui-preview.png)
 
-<sub>界面示意图：左栏选择供应商并填 Key，中栏实时执行轨迹，右栏带引用的报告。</sub>
+<sub>界面示意图：左栏选择供应商并填写模型 Key 与 GitHub Token，中栏实时执行轨迹，右栏带引用的报告。</sub>
 
-打开页面后可以直接选择供应商并填自己的 Key，**无需改服务端配置**：
+页面上的两个凭据都只用于当次分析，**不落盘、不进日志、不进 trace**：
 
-1. **大模型供应商**：选 `OpenAI` / `Claude` / `通义千问` / `Ollama` 等（留空则用服务器默认）；
-2. **API Key**：填对应厂商的 Key（仅随本次请求发送，**不落盘、不进日志、不进 trace**）；
-3. **高级 → 模型名**：可选，留空用该供应商默认模型；
-4. 点「开始分析」，报告顶部的指标会显示本次实际使用的 `provider / model`。
+1. **大模型供应商**：选择厂商（留空用服务器默认）；
+2. **模型 API Key**：填该厂商的 Key；
+3. **GitHub Token**：可选，提高额度或访问私有仓库；
+4. **高级 → 模型名**：可选，留空用该供应商默认模型。
 
-也可以通过 API 传：
+对应的 API 请求：
 
 ```json
 POST /api/v1/analyze
 {
   "repo": "idosal/git-mcp",
   "issue_number": 214,
-  "llm": {"provider": "openai", "model": "gpt-4o-mini", "api_key": "sk-..."}
+  "llm": {"provider": "openai", "model": "gpt-4o-mini", "api_key": "sk-..."},
+  "github": {"token": "github_pat_..."}
 }
 ```
 
 安全约束：
 - **不允许前端指定 base_url**（避免服务端被当成 SSRF 跳板），自建网关请用服务端 `LLM_BASE_URL`；
-- 用户 Key 只在该次运行的 `Settings` 副本中存在，不写数据库、不写结果缓存、不写 trace；
+- 两个凭据都只存在于该次运行的内存对象里，不写数据库、不写结果缓存、不写 trace；
+- 结果缓存按「模型 + GitHub 凭据范围」隔离，不同 Token 不会互相复用结果；
+- GitHub HTTP 缓存也按 Token 作用域隔离，避免用 A 的权限缓存出 B 能看到的内容；
 - 选择其他供应商但没填 Key 时返回 **400** 并提示，而不是 500；
 - 服务端限流仍然生效，防止 BYOK 被用来刷服务器资源。
+
+---
 
 ### Docker（可选）
 
@@ -230,7 +231,10 @@ python -m issue_agent.cli doctor                  # 环境自检
 鉴权：配置 `API_KEYS="key:tenant,key2:tenant2"` 后必须带 `X-API-Key`；未配置时仅允许本机访问。
 错误统一为 `{"error":{"code","message","retryable"},"request_id"}`。
 
-**重复请求复用**：同一 `(租户, 仓库, Issue, 补充信息, 模型, Prompt 版本)` 在
+`/api/v1/analyze` 与 `/api/v1/jobs` 支持可选的 `llm` 与 `github` 字段，用于传入用户自己的
+模型 Key 与 GitHub Token（见 4.3）；不传则使用服务端默认配置。
+
+**重复请求复用**：同一 `(租户, 仓库, Issue, 补充信息, 模型, Prompt 版本, GitHub 凭据范围)` 在
 `RESULT_CACHE_TTL_S`（默认 900s）内直接返回缓存结果，并带 `cache.age_seconds`；
 缓存未写入时的并发相同请求由 single-flight 合并为一次执行；运行中的异步作业按同一 key 去重。
 

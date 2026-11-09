@@ -19,6 +19,12 @@ class LLMOverride(BaseModel):
     api_key: SecretStr | None = Field(default=None, description="仅本次请求使用，不落盘")
 
 
+class GitHubOverride(BaseModel):
+    """单次请求的 GitHub Token（BYOK），用于访问私有仓库或提高额度。"""
+
+    token: SecretStr | None = Field(default=None, description="仅本次请求使用，不落盘")
+
+
 class AnalyzeRequest(BaseModel):
     repo: str = Field(min_length=3, max_length=205,
                       examples=["idosal/git-mcp"])
@@ -26,6 +32,7 @@ class AnalyzeRequest(BaseModel):
     user_context: str = Field(default="", max_length=2000,
                               description="本机环境、版本、已尝试步骤；会被脱敏后使用")
     llm: LLMOverride | None = Field(default=None, description="可选：用户自带模型 Key")
+    github: GitHubOverride | None = Field(default=None, description="可选：用户自带 GitHub Token")
 
 
 class FeedbackRequest(BaseModel):

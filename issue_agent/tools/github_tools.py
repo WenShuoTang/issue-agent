@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import random
 import re
@@ -86,6 +87,14 @@ def sanitize_query(query: str, max_tokens: int = 6) -> str:
     return cleaned or "bug"
 
 
+def token_scope(token: str | None) -> str:
+    """按 Token 隔离 HTTP 缓存作用域：不同权限的 Token 不共享缓存。"""
+    raw = (token or "").strip()
+    if not raw:
+        return "anon"
+    return "tok:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass
 class RateLimit:
     limit: int | None = None
@@ -103,6 +112,7 @@ class GitHubClient:
     cache: SqliteCache | None = None
     transport: httpx.BaseTransport | None = None
     sleep_fn: object = time.sleep
+    cache_scope: str | None = None
     _client: httpx.Client | None = None
     request_count: int = 0
     cache_hits: int = 0
@@ -117,6 +127,7 @@ class GitHubClient:
             "User-Agent": "issue-triage-agent/1.0",
         }
         token = self.token or (settings.github_token if settings else "")
+        self.cache_scope = self.cache_scope or token_scope(token)
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self._client = httpx.Client(base_url=API_BASE, headers=headers,
@@ -135,6 +146,9 @@ class GitHubClient:
 
     def __exit__(self, *_) -> None:
         self.close()
+
+    def _cache_key(self, path: str, params: dict | None) -> str:
+        return "gh:" + stable_key(self.cache_scope or "anon", path, params or {})
 
     def _remember_ratelimit(self, response: httpx.Response) -> None:
         def _int(name: str) -> int | None:
@@ -156,7 +170,7 @@ class GitHubClient:
         if not path.startswith("/") or path.startswith("//") or "://" in path:
             raise GitHubError("非法 API 路径")
         params = {k: v for k, v in (params or {}).items() if v is not None}
-        cache_key = "gh:" + stable_key(path, params)
+        cache_key = self._cache_key(path, params)
         cached = self.cache.get(cache_key) if self.cache else None
         if cached and time.time() < cached.get("fresh_until", 0):
             self.cache_hits += 1

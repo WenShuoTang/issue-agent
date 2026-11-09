@@ -383,6 +383,21 @@ class TestResultReuse(unittest.TestCase):
         self.assertNotIn("cache", second)       # 换模型不能复用服务器默认模型的结果
         self.assertTrue(third["cache"]["hit"])  # 同一 override 可复用
 
+    def test_github_token_isolates_result_cache(self):
+        token_a = {"token": "ghp_" + "a" * 36}
+        token_b = {"token": "ghp_" + "b" * 36}
+        with tempfile.TemporaryDirectory() as folder:
+            runner = _runner(folder, HeuristicLLM())
+            try:
+                first = runner.run(REPO, ISSUE, tenant="t1", github_override=token_a)
+                second = runner.run(REPO, ISSUE, tenant="t1", github_override=token_a)
+                other = runner.run(REPO, ISSUE, tenant="t1", github_override=token_b)
+            finally:
+                runner.close()
+        self.assertEqual(first["metrics"]["github_auth"], "user")
+        self.assertTrue(second["cache"]["hit"])
+        self.assertNotIn("cache", other)
+
     def test_cache_is_tenant_scoped(self):
         with tempfile.TemporaryDirectory() as folder:
             runner = _runner(folder, HeuristicLLM())

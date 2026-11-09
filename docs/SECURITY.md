@@ -120,31 +120,33 @@ Issue 正文无法提前伪造边界闭合标记。
 - 会话/作业/记忆全部按 tenant 过滤；跨租户访问返回 404（不泄露存在性）。
 - 残余：没有用户级身份（同一租户内无法区分人）；Key 轮换需要重启进程。
 
-### 4.1 BYOK：用户自带的模型 Key
+### 4.1 BYOK：用户自带的模型 Key 与 GitHub Token
 
-用户可以在前端为自己的分析指定 LLM 供应商与 Key（`llm.api_key`）：
+前端允许用户为自己的分析指定 LLM 供应商/Key（`llm.api_key`）与 GitHub Token
+（`github.token`），两者都只在本次运行内有效。
 
-| 环节 | 处理 |
-|---|---|
-| 传输 | 只在 HTTPS 请求体中传输（生产必须由反向代理终止 TLS） |
-| 解析 | Pydantic `SecretStr`，避免被 `repr` / 异常 / 调试输出打印 |
-| 使用 | 只构造该次运行的 `Settings` 副本，运行结束随对象回收 |
-| 持久化 | **不写** SQLite、结果缓存、trace、会话 payload、日志 |
-| 回显 | 响应/错误里只有 provider 与 model，不含 Key |
-| 审计 | trace 只记录 provider/model 与耗时，不记录请求体 |
+| 环节 | 模型 Key | GitHub Token |
+|---|---|---|
+| 传输 | HTTPS 请求体 | HTTPS 请求体 |
+| 解析 | Pydantic `SecretStr` | Pydantic `SecretStr` |
+| 使用 | 该次运行的 `Settings` 副本 | 该次运行的一次性 `GitHubClient`，结束即关闭 |
+| 持久化 | 不写 DB / 结果缓存 / trace / 日志 | 同左；HTTP 缓存按 Token 作用域隔离 |
+| 回显 | 响应只有 provider/model | 响应只有 `github_auth`（user/server/anonymous） |
 
 额外约束：
 
 - **不接受客户端 base_url**：否则任何调用方都能让服务端向任意地址发请求（SSRF）。
   自建/代理端点只能由部署方通过服务端 `LLM_BASE_URL` 配置。
-- **缺 Key 直接 400**：不会静默回退到服务器 Key，避免"以为用自己的 Key、实际花服务器额度"。
+- **缺模型 Key 直接 400**：不会静默回退到服务器 Key，避免"以为用自己的 Key、实际花服务器额度"。
 - **同供应商未填 Key** 时复用服务器 Key，这是自部署场景的便利设计，文档中已注明。
+- **缓存按凭据隔离**：结果缓存包含 GitHub Token 指纹；GitHub HTTP 缓存按 Token 作用域
+  （`anon` 或哈希）隔离，避免用 A 的权限缓存出 B 能看到的内容。
 
 残余风险：
 
-1. 浏览器端 Key 存在于页面内存，若用户机器被恶意扩展/木马控制，仍可能被读取；
-2. 反向代理若开启请求体日志（如某些 WAF/调试模式），可能记录 Key —— 部署时需关闭；
-3. 同一 tenant 内不同用户使用各自 Key 时，结果缓存可能被共享（按模型维度，不含 Key）。
+1. 浏览器端凭据存在于页面内存，若用户机器被恶意扩展/木马控制，仍可能被读取；
+2. 反向代理若开启请求体日志（如某些 WAF/调试模式），可能记录凭据 —— 部署时需关闭；
+3. 同一 tenant 内相同凭据、相同模型的结果会复用缓存；不同凭据不会互相复用。
 
 ---
 

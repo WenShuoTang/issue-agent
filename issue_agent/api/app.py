@@ -25,7 +25,7 @@ from ..obs.logs import configure_logging, get_logger
 from ..obs.metrics import METRICS
 from ..providers import list_presets
 from ..results import analysis_key
-from ..tools.github_tools import validate_repo
+from ..tools.github_tools import token_scope, validate_repo
 from .jobs import JobManager, sse_format
 from .schemas import AnalyzeRequest, FeedbackRequest, JobCreated
 from .security import ApiKeyAuthenticator, RateLimiter, http_exception_for, request_context_middleware
@@ -49,6 +49,18 @@ def _llm_override(req: AnalyzeRequest) -> dict | None:
     if req.llm.api_key:
         override["api_key"] = req.llm.api_key.get_secret_value()
     return override or None
+
+
+def _github_override(req: AnalyzeRequest) -> dict | None:
+    """解析 GitHub Token；只保留在内存，用于本次运行的 GitHub 客户端。"""
+    if req.github is None or req.github.token is None:
+        return None
+    token = req.github.token.get_secret_value().strip()
+    if not token:
+        return None
+    if not 20 <= len(token) <= 255:
+        raise ValidationError("GitHub Token 长度异常，请检查是否粘贴完整")
+    return {"token": token}
 
 
 def _resolve_llm(runner, req: AnalyzeRequest) -> tuple[dict | None, Settings]:
@@ -161,9 +173,11 @@ def create_app(settings: Settings | None = None, *, runner=None,
                 tenant: str = Depends(require_tenant)) -> dict:
         limiter.check(tenant)
         override, _ = _resolve_llm(runner, req)
+        github = _github_override(req)
         try:
             return runner.run(req.repo, req.issue_number, user_context=req.user_context,
-                              tenant=tenant, llm_override=override)
+                              tenant=tenant, llm_override=override,
+                              github_override=github)
         except AgentError as exc:
             raise http_exception_for(exc, getattr(request.state, "request_id", "")) from exc
 
@@ -171,12 +185,14 @@ def create_app(settings: Settings | None = None, *, runner=None,
     def create_job(req: AnalyzeRequest, tenant: str = Depends(require_tenant)) -> JobCreated:
         limiter.check(tenant)
         override, effective = _resolve_llm(runner, req)
+        github = _github_override(req)
 
         def work(emit) -> dict:
             final: dict = {}
             for event in runner.stream(req.repo, req.issue_number,
                                        user_context=req.user_context, tenant=tenant,
-                                       llm_override=override):
+                                       llm_override=override,
+                                       github_override=github):
                 emit(event)
                 if event.get("event") == "final":
                     final = event.get("result") or {}
@@ -186,11 +202,12 @@ def create_app(settings: Settings | None = None, *, runner=None,
             normalized = validate_repo(req.repo)
         except Exception:
             normalized = req.repo
-        # 去重键只包含供应商/模型，不包含 Key（同一模型的不同 Key 可共享结果）。
+        # 去重键包含模型与 GitHub 凭据范围，不包含凭据本身。
         job = manager.submit(tenant, work, dedupe_key=analysis_key(
             tenant=tenant, repo=normalized, issue_number=req.issue_number,
             user_context=req.user_context, provider=effective.llm_provider,
-            model=effective.llm_model, prompt_fingerprint=PROMPT_FINGERPRINT))
+            model=effective.llm_model, prompt_fingerprint=PROMPT_FINGERPRINT,
+            github_fingerprint=token_scope((github or {}).get("token"))))
         return JobCreated(job_id=job.job_id, status=job.status,
                           events_url=f"/api/v1/jobs/{job.job_id}/events")
 

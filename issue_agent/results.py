@@ -24,15 +24,16 @@ from .cache import stable_key
 
 
 def analysis_key(*, tenant: str, repo: str, issue_number: int, user_context: str,
-                 provider: str, model: str, prompt_fingerprint: str) -> str:
-    """缓存键：租户隔离 + 供应商/模型/Prompt 版本绑定。
+                 provider: str, model: str, prompt_fingerprint: str,
+                 github_fingerprint: str = "") -> str:
+    """缓存键：租户隔离 + 供应商/模型/Prompt 版本 + GitHub 凭据范围。
 
-    ``provider`` 必须参与：不同厂商可能有同名模型，只按模型名做 key 会把 A 家的结果
-    返回给 B 家。
+    ``github_fingerprint`` 必须参与：不同 Token 能看到的仓库/内容不同，
+    只按 repo+issue 做 key 会把 A 能看到的私有内容返回给 B。
     """
     context_digest = hashlib.sha256((user_context or "").strip().encode("utf-8")).hexdigest()[:16]
     return "analysis:" + stable_key(tenant, provider, repo, issue_number, context_digest,
-                                    model, prompt_fingerprint)
+                                    model, prompt_fingerprint, github_fingerprint)
 
 
 @dataclass

@@ -246,6 +246,14 @@ class TestToolRegistry(unittest.TestCase):
 
 
 class TestGitHubTools(unittest.TestCase):
+    def test_token_scope_isolates_cache(self):
+        from issue_agent.tools.github_tools import token_scope
+
+        self.assertEqual(token_scope(""), "anon")
+        self.assertNotEqual(token_scope("ghp_" + "a" * 36), "anon")
+        self.assertNotEqual(token_scope("ghp_" + "a" * 36),
+                            token_scope("ghp_" + "b" * 36))
+
     def test_repo_validation(self):
         self.assertEqual(validate_repo("owner/repo.name"), "owner/repo.name")
         for bad in ("https://github.com/a/b", "../../etc/passwd", "a/b/c", "a/.", "a/..",
@@ -287,7 +295,7 @@ class TestGitHubTools(unittest.TestCase):
             try:
                 self.assertEqual(client._request("/repos/a/b/issues/1")[0]["title"], "t")
                 # 手动把缓存置为过期，触发条件请求（真实场景是 TTL 到期）
-                key = "gh:" + stable_key("/repos/a/b/issues/1", {})
+                key = client._cache_key("/repos/a/b/issues/1", {})
                 cached = client.cache.get(key)
                 cached["fresh_until"] = 0
                 client.cache.set(key, cached, ttl=600)

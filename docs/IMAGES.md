@@ -36,7 +36,7 @@ README 使用的图片都在 `docs/assets/`，已针对 GitHub 渲染做过尺�
 ```
 
 ```text
-深色 SaaS 界面概念图，1600×1000，三栏布局：左栏 Repository / Issue / Model Provider /
+深色 SaaS 界面概念图，1600×1000，三栏布局：左栏 Repository / Issue / Model Provider / GitHub Token /
 API Key (BYOK, not stored) / Analyze；中栏 Workflow 时间线 7 个节点；
 右栏 Triage Report，两条带 LOW/MEDIUM 标签与 [1][2] 引用角标的结论，
 底部指标胶囊 Rounds / Tools / Tokens / Latency。扁平、圆角、薄荷青强调，文字清晰，无人物水印。

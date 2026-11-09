@@ -70,15 +70,16 @@ LLM_MODEL=internal-qwen
 LLM_API_KEY=internal-key
 ```
 
-### 2.1 前端「自带 Key」（BYOK）
+### 2.1 前端填写凭据（模型 + GitHub）
 
-不想把 Key 配到服务器时，可以直接在网页上选供应商、填 Key：
+不需要改服务器配置，打开页面即可：
 
 1. 打开 <http://127.0.0.1:8000>；
-2. **大模型供应商** 选择目标厂商（列表由服务端 `/api/v1/meta` 动态下发）；
-3. **API Key** 填入该厂商 Key（输入框为密码类型）；
-4. 可选：展开「高级」填模型名；
-5. 开始分析。报告指标里会显示本次实际使用的 `provider / model`。
+2. **大模型供应商** 选择厂商（列表由 `/api/v1/meta` 动态下发）；
+3. **模型 API Key** 填入该厂商 Key（密码输入框）；
+4. **GitHub Token**（可选）填入 PAT：匿名 60 次/小时，填了 5,000 次/小时，并可读私有仓库；
+5. 可选：展开「高级」填模型名；
+6. 开始分析。报告指标会显示 `provider / model` 以及 GitHub 认证方式。
 
 对应 API：
 
@@ -89,7 +90,8 @@ Content-Type: application/json
 {
   "repo": "idosal/git-mcp",
   "issue_number": 214,
-  "llm": {"provider": "qwen", "model": "qwen-plus", "api_key": "sk-..."}
+  "llm": {"provider": "qwen", "model": "qwen-plus", "api_key": "sk-..."},
+  "github": {"token": "github_pat_..."}
 }
 ```
 
@@ -97,17 +99,19 @@ Content-Type: application/json
 
 | 规则 | 说明 |
 |---|---|
-| Key 生命周期 | 只存在于该次请求的 Settings 副本，运行结束即丢弃 |
-| 不落盘 | 不写数据库、不写结果缓存、不写 trace JSONL、不进日志 |
-| 不回显 | 响应里只返回 provider/model，不含 Key；`SecretStr` 防误打印 |
+| 模型 Key 生命周期 | 只存在于该次请求的 Settings 副本，运行结束即丢弃 |
+| GitHub Token 生命周期 | 只用于该次运行的一次性 GitHub 客户端，结束即关闭连接 |
+| 不落盘 | 两者都不写数据库、结果缓存、trace JSONL、日志 |
+| 不回显 | 响应只返回 provider/model 与 `github_auth`，不含凭据 |
+| 缓存隔离 | 结果缓存与 GitHub HTTP 缓存都按 Token 作用域隔离，不同权限不共享 |
 | 不能指定 base_url | 防止服务端被当成 SSRF 跳板；自建端点必须服务端配置 |
-| 缺 Key 时 | 返回 **400** 并提示，不会静默回退到服务器 Key |
-| 与服务器默认同厂商 | 不填 Key 时复用服务器 Key（方便自部署） |
+| 缺模型 Key | 返回 **400**，不会静默回退到服务器 Key |
+| 与服务器默认同厂商 | 不填模型 Key 时复用服务器 Key（方便自部署） |
 | 限流/预算 | 仍按服务端配置执行，BYOK 不能绕过 |
 
-> 多租户公网部署时注意：结果缓存按 `tenant + provider + model + Prompt 指纹` 复用。
-> 若不同用户使用各自 Key 但同属一个 tenant，会共享同一份结果——这通常没问题，
-> 但如果你要求"谁的 Key 只产生谁的结果"，请按 API Key 划分 tenant。
+> 公网多租户部署时，建议按 API Key 划分 tenant。结果缓存按
+> `tenant + provider + model + Prompt 指纹 + GitHub 凭据范围` 复用；
+> 同一 tenant、同一凭据的重复请求会命中缓存，不同 Token 不会互相复用。
 
 ---
 
@@ -231,7 +235,7 @@ LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
    - **Metadata**：`Read-only`（默认必选）
    - **Pull requests**：`Read-only`（可选，用于查关联 PR）
    - 其余全部保持 `No access`
-7. 点 **Generate token**，复制 `github_pat_...`，填到 `.env` 的 `GITHUB_TOKEN`（**只显示一次**）。
+7. 点 **Generate token**，复制 `github_pat_...`（**只显示一次**）：优先粘贴到页面的 **GitHub Token** 输入框；需要给服务端设默认值时才写入 `.env` 的 `GITHUB_TOKEN`。
 
 ### 方案 B：Classic token（更简单，权限更粗）
 
@@ -240,7 +244,7 @@ LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 3. Scopes：
    - 公开仓库：勾选 `public_repo` 即可；
    - 需要读私有仓库：勾选 `repo`（权限较大，谨慎）。
-4. 生成后复制 `ghp_...` 填入 `GITHUB_TOKEN`。
+4. 生成后复制 `ghp_...`，粘贴到页面 **GitHub Token** 输入框（或写入服务端 `.env`）。
 
 ### 验证 Token 是否生效
 

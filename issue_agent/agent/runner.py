@@ -30,7 +30,7 @@ from ..results import ResultStore, SingleFlight, analysis_key
 from ..security.guard import redact, sanitize_untrusted
 from ..security.policy import ToolPolicy
 from ..tools.base import ToolRegistry
-from ..tools.github_tools import GitHubClient, build_github_tools, validate_repo
+from ..tools.github_tools import GitHubClient, build_github_tools, token_scope, validate_repo
 from ..tools.kb_tools import build_kb_tools
 from .graph import build_graph
 from .nodes import AgentNodes, Runtime
@@ -99,15 +99,16 @@ class AgentRunner:
             tenant: str = "local", session_id: str | None = None,
             sink=None, start: str = "ingest",
             resume_state: dict | None = None, use_cache: bool = True,
-            llm_override: dict | None = None) -> dict:
+            llm_override: dict | None = None,
+            github_override: dict | None = None) -> dict:
         """带结果缓存与并发合并的执行入口。
 
         缓存只对「首轮、非续跑、成功」的分析生效：
         - 失败/降级结果不缓存（避免把一次预算耗尽固化成一个可用答案）；
-        - 缓存键包含租户、供应商、模型与 Prompt 指纹，换模型自动失效。
+        - 缓存键包含租户、供应商、模型、Prompt 指纹与 GitHub 凭据范围。
 
-        ``llm_override`` 支持单次请求自带供应商/模型/Key（BYOK）；Key 只在本次运行内
-        有效，不落盘、不进结果、不进 trace。
+        ``llm_override`` / ``github_override`` 支持单次请求自带模型与 GitHub 凭据
+        （BYOK）；凭据只在该次运行内有效，不落盘、不进结果、不进 trace。
         """
         settings = self.settings
         if llm_override:
@@ -115,6 +116,7 @@ class AgentRunner:
                 provider=llm_override.get("provider"),
                 model=llm_override.get("model"),
                 api_key=llm_override.get("api_key"))
+        github_token = (github_override or {}).get("token") or None
         tenant_key = (tenant or "local").strip()[:64]
         cache_key = None
         if (use_cache and settings.result_cache_enabled and settings.result_cache_ttl_s > 0
@@ -128,7 +130,8 @@ class AgentRunner:
                     tenant=tenant_key, repo=normalized_repo,
                     issue_number=int(issue_number), user_context=user_context,
                     provider=settings.llm_provider, model=settings.llm_model,
-                    prompt_fingerprint=PROMPT_FINGERPRINT)
+                    prompt_fingerprint=PROMPT_FINGERPRINT,
+                    github_fingerprint=token_scope(github_token))
                 hit = self.results.get(cache_key)
             except Exception:
                 log.warning("结果缓存读取失败，降级为直接执行")
@@ -144,7 +147,7 @@ class AgentRunner:
             return self._run_once(repo, issue_number, user_context=user_context,
                                   tenant=tenant, session_id=session_id, sink=sink,
                                   start=start, resume_state=resume_state,
-                                  settings=settings)
+                                  settings=settings, github_token=github_token)
 
         if cache_key is not None and sink is None:
             # 缓存击穿保护：并发相同请求只让第一个真正执行。
@@ -171,7 +174,8 @@ class AgentRunner:
                   tenant: str = "local", session_id: str | None = None,
                   sink=None, start: str = "ingest",
                   resume_state: dict | None = None,
-                  settings: Settings | None = None) -> dict:
+                  settings: Settings | None = None,
+                  github_token: str | None = None) -> dict:
         settings = settings or self.settings
         started = time.monotonic()
         repo = validate_repo(repo)
@@ -199,8 +203,19 @@ class AgentRunner:
             # 配置级错误（缺少 Key / SDK 不可用）直接上抛，交由 API 返回 5xx；
             # 运行期错误一律转成可读的失败/降级结果，不让进程崩、不返回裸 500。
             llm = self._make_llm(budget, tracer, settings)
+            # 用户自带 GitHub Token 时使用一次性的客户端（共享同一个 SQLite 缓存库），
+            # 运行结束后关闭，避免连接与凭据长期驻留。
+            temp_github = None
+            if self._github is not None:
+                # 测试/嵌入场景注入的客户端优先，不按 Token 新建真实连接。
+                github_client = self._github
+            elif github_token and github_token != settings.github_token:
+                temp_github = GitHubClient(token=github_token, settings=settings)
+                github_client = temp_github
+            else:
+                github_client = self._github_client()
             try:
-                runtime = self._build_runtime(llm, tracer, budget, settings)
+                runtime = self._build_runtime(llm, tracer, budget, settings, github_client)
                 nodes = AgentNodes(runtime)
                 graph = build_graph(nodes, settings, entry=start)
                 state: AgentState = resume_state or new_state(
@@ -220,9 +235,12 @@ class AgentRunner:
                 return self._failure(repo, issue_number, tenant, session_id, run_id,
                                      tracer, budget, f"内部错误：{type(exc).__name__}",
                                      "internal_error", started)
+            finally:
+                if temp_github is not None:
+                    temp_github.close()
 
         return self._result(final, tracer, budget, started, repo, issue_number,
-                            tenant, session_id, settings)
+                            tenant, session_id, settings, github_token)
 
     def resume(self, session_id: str, *, tenant: str = "local") -> dict:
         """从最近的检查点续跑。已抓取的证据直接复用，只补没做完的部分。"""
@@ -252,10 +270,11 @@ class AgentRunner:
 
     # ------------------------------------------------------------------ 依赖装配
     def _build_runtime(self, llm: Any, tracer: Tracer, budget: Budget,
-                       settings: Settings | None = None) -> Runtime:
+                       settings: Settings | None = None,
+                       github_client: Any | None = None) -> Runtime:
         settings = settings or self.settings
         registry = ToolRegistry()
-        build_github_tools(registry, self._github_client())
+        build_github_tools(registry, github_client or self._github_client())
         runtime = Runtime(
             settings=settings, llm=llm, registry=registry, memory=self.memory,
             tracer=tracer, budget=budget, policy=ToolPolicy(),
@@ -267,7 +286,8 @@ class AgentRunner:
     # ------------------------------------------------------------------ 结果
     def _result(self, state: AgentState, tracer: Tracer, budget: Budget,
                 started: float, repo: str, issue_number: int, tenant: str,
-                session_id: str, settings: Settings | None = None) -> dict:
+                session_id: str, settings: Settings | None = None,
+                github_token: str | None = None) -> dict:
         settings = settings or self.settings
         status = state.get("status", "succeeded")
         report = state.get("report") or ""
@@ -277,11 +297,18 @@ class AgentRunner:
                      "kind": doc.get("kind", ""), "risk": doc.get("risk", 0.0),
                      "snippet": (doc.get("body") or "")[:240]}
                     for doc in state.get("documents", [])]
+        if github_token:
+            github_auth = "user"
+        elif settings.github_token:
+            github_auth = "server"
+        else:
+            github_auth = "anonymous"
         metrics = {
             **budget.snapshot(),
             **(state.get("metrics") or {}),
             "provider": settings.llm_provider,
             "model": settings.llm_model,
+            "github_auth": github_auth,
             "trace": tracer.summary(),
             "duration_ms": int((time.monotonic() - started) * 1000),
         }
@@ -345,7 +372,8 @@ class AgentRunner:
     # ------------------------------------------------------------------ 流式
     def stream(self, repo: str, issue_number: int, *, user_context: str = "",
                tenant: str = "local", session_id: str | None = None,
-               llm_override: dict | None = None) -> Iterator[dict]:
+               llm_override: dict | None = None,
+               github_override: dict | None = None) -> Iterator[dict]:
         """边执行边产出 trace 事件；最后一个事件是 ``final``（完整结果）。"""
         events: queue.Queue = queue.Queue()
         holder: dict[str, Any] = {}
@@ -357,7 +385,8 @@ class AgentRunner:
             try:
                 holder["result"] = self.run(repo, issue_number, user_context=user_context,
                                            tenant=tenant, session_id=session_id, sink=sink,
-                                           llm_override=llm_override)
+                                           llm_override=llm_override,
+                                           github_override=github_override)
             except Exception as exc:  # noqa: BLE001
                 holder["error"] = exc
             finally:

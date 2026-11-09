@@ -89,17 +89,24 @@
 
       <div class="grid" style="margin-top:14px">
         <div>
-          <label for="provider">大模型供应商（自带 Key，可选）</label>
+          <label for="provider">大模型供应商（可选，自带 Key）</label>
           <select id="provider">
             <option value="">使用服务器默认配置</option>
           </select>
         </div>
         <div>
-          <label for="llmKey">该供应商的 API Key（仅本次请求使用，不保存）</label>
+          <label for="llmKey">模型 API Key（仅本次请求使用，不保存）</label>
           <input id="llmKey" type="password" autocomplete="off"
                  placeholder="留空则使用服务器默认 Key">
         </div>
       </div>
+
+      <div style="margin-top:10px">
+        <label for="githubToken">GitHub Token（可选，仅本次请求使用，不保存）</label>
+        <input id="githubToken" type="password" autocomplete="off"
+               placeholder="留空则用服务器配置；都没有时按匿名 60 次/小时">
+      </div>
+
       <details style="margin-top:10px">
         <summary class="status" style="cursor:pointer">高级：指定模型名</summary>
         <div style="margin-top:10px">
@@ -107,7 +114,7 @@
           <input id="llmModel" autocomplete="off" placeholder="例如 gpt-4o-mini / qwen-plus / claude-sonnet-4-5">
         </div>
         <p class="status" style="margin-top:8px" id="providerHint">
-          自带 Key 只用于本次分析，不会写入数据库或日志；服务端地址由部署方固定，页面无法指定。
+          模型 Key 与 GitHub Token 只用于本次分析，不写数据库或日志；服务端地址由部署方固定。
         </p>
       </details>
 
@@ -253,6 +260,8 @@ function renderResult(result) {
   $("chips").innerHTML = [
     chip("状态", result.status),
     chip("模型", (m.provider || "server") + " / " + (m.model || "default")),
+    chip("GitHub", m.github_auth === "user" ? "我的 Token"
+      : m.github_auth === "server" ? "服务器 Token" : "匿名"),
     chip("检索轮次", m.rounds || 0),
     chip("工具调用", m.tool_calls || 0),
     chip("Token", m.tokens_total || 0),
@@ -364,13 +373,15 @@ $("form").addEventListener("submit", async (e) => {
   const provider = $("provider").value;
   const llmKey = $("llmKey").value.trim();
   const llmModel = $("llmModel").value.trim();
+  const githubToken = $("githubToken").value.trim();
   if (provider || llmKey || llmModel) {
     payload.llm = {};
     if (provider) payload.llm.provider = provider;
     if (llmKey) payload.llm.api_key = llmKey;
     if (llmModel) payload.llm.model = llmModel;
   }
-  // 只记住供应商与模型名，绝不把 Key 写进 localStorage / sessionStorage。
+  if (githubToken) payload.github = { token: githubToken };
+  // 只记住供应商与模型名，绝不把 Key / Token 写进 localStorage / sessionStorage。
   if (provider) localStorage.setItem("issue_agent_provider", provider);
   if (llmModel) localStorage.setItem("issue_agent_model", llmModel);
   else localStorage.removeItem("issue_agent_model");
