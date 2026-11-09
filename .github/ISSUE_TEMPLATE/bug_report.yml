@@ -1,0 +1,44 @@
+name: "Bug 报告"
+description: 报告可复现的问题（请先脱敏）
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请**删除密钥、内网地址、真实用户名等隐私信息**。
+        安全问题请走 Security Advisories，不要开公开 Issue。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 现象、期望行为、实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 最小复现
+      description: 命令 / 请求 / 配置；请使用公开仓库或合成数据
+      placeholder: |
+        python -m issue_agent.cli analyze --repo owner/repo --issue 123
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志（已脱敏）
+      render: text
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      placeholder: "OS / Python 版本 / 依赖版本（doctor 输出）"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已移除密钥、个人邮箱、内网地址等隐私信息
+          required: true
+        - label: 我已搜索过现有 Issue
+          required: true

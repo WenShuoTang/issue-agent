@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/WenShuoTang/issue-agent/security/advisories/new
+    about: 请勿公开报告安全问题，使用私密渠道
+  - name: 使用问题 / 讨论
+    url: https://github.com/WenShuoTang/issue-agent/discussions
+    about: 配置、部署、通用问题请走 Discussions

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GitHub Issue 排障 Agent</title>
+<style>
+  :root{color-scheme:dark;--bg:#0b1220;--panel:#131c2b;--panel-2:#0f1725;--line:#26374d;
+        --text:#e8eef7;--muted:#95a5bb;--accent:#4fd1b5;--warn:#f0b37e;--bad:#f08e8e;--ok:#7ee2a8;
+        font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 20% -10%,#16263c,var(--bg));color:var(--text)}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+  h1{font-size:24px;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:13px;line-height:1.7;margin:0}
+  .badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);margin:2px 6px 2px 0}
+  .panel{background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+  .grid{display:grid;grid-template-columns:2fr 1fr;gap:14px}
+  label{display:block;font-size:12px;color:var(--muted);margin:0 0 6px}
+  input,textarea,select{width:100%;background:#0d1624;border:1px solid #33475f;border-radius:8px;color:var(--text);padding:10px 11px;font:inherit;font-size:14px}
+  textarea{resize:vertical}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  button{border:0;border-radius:9px;padding:11px 18px;font-weight:700;font-size:14px;cursor:pointer;background:var(--accent);color:#06130f}
+  button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:500}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .status{font-size:12px;color:var(--muted)}
+  .cols{display:grid;grid-template-columns:340px 1fr;gap:16px;align-items:start}
+  @media (max-width:900px){.cols{grid-template-columns:1fr}.grid{grid-template-columns:1fr}}
+  .trace{max-height:520px;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .trow{display:flex;gap:8px;padding:6px 4px;border-bottom:1px dashed #1e2c3f;align-items:baseline}
+  .trow .kind{width:46px;flex:none;color:var(--accent);text-transform:uppercase;font-size:10px}
+  .trow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .trow .ms{color:var(--muted);flex:none}
+  .trow.err .nm{color:var(--bad)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .chip{border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12px;color:var(--muted)}
+  .chip b{color:var(--text)}
+  .report{line-height:1.75;font-size:14px}
+  .report h1{font-size:20px;margin:6px 0 12px;border-bottom:1px solid var(--line);padding-bottom:8px}
+  .report h2{font-size:16px;margin:20px 0 8px;color:var(--accent)}
+  .report h3{font-size:14px;margin:16px 0 6px}
+  .report a{color:#7fd8ff;text-decoration:none;border-bottom:1px dotted #3d6b85}
+  .report blockquote{margin:10px 0;padding:8px 12px;border-left:3px solid #37506b;color:var(--muted);background:#0e1826}
+  .report code{background:#0d1624;padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .report hr{border:0;border-top:1px solid var(--line);margin:18px 0}
+  .report li{margin:4px 0}
+  .ev{display:flex;gap:10px;padding:9px 0;border-bottom:1px dashed #1e2c3f;font-size:13px}
+  .ev .id{color:var(--accent);font-family:ui-monospace,monospace;flex:none;width:32px}
+  .ev .meta{color:var(--muted);font-size:11px;margin-top:2px}
+  .tag{display:inline-block;font-size:10px;border:1px solid var(--line);border-radius:999px;padding:1px 7px;margin-left:6px;color:var(--muted)}
+  .tag.risk{color:var(--warn);border-color:#5a4530}
+  .warnlist{margin:8px 0 0;padding-left:18px;color:var(--warn);font-size:12.5px;line-height:1.7}
+  .fb{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .hidden{display:none!important}
+  footer{margin-top:26px;color:#6d7f96;font-size:12px;line-height:1.8}
+  a{color:#7fd8ff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>🔎 GitHub Issue 排障 Agent</h1>
+      <p class="sub">只读 Agentic RAG｜规划 → 工具检索 → 证据校验 → 自纠错 → 带引用报告<br>
+      不会运行目标仓库代码，不会修改 Issue / 代码，不声称已修复。</p>
+    </div>
+    <div>
+      <span class="badge" id="modelBadge">模型加载中…</span>
+      <span class="badge" id="budgetBadge">预算 …</span>
+    </div>
+  </header>
+
+  <section class="panel">
+    <form id="form">
+      <div class="grid">
+        <div>
+          <label for="repo">GitHub 仓库 (owner/repo)</label>
+          <input id="repo" value="idosal/git-mcp" required autocomplete="off">
+        </div>
+        <div>
+          <label for="issue">Issue 编号</label>
+          <input id="issue" type="number" min="1" value="214" required>
+        </div>
+      </div>
+      <label for="context">补充信息（可选：本机版本 / 报错环境 / 已尝试步骤）</label>
+      <textarea id="context" rows="3" maxlength="600"
+        placeholder="例如：Windows 11 / Python 3.11，运行到第 2 步连接 MCP server 时超时"></textarea>
+      <details style="margin-top:12px">
+        <summary class="status" style="cursor:pointer">鉴权与高级选项</summary>
+        <div class="grid" style="margin-top:10px">
+          <div>
+            <label for="apikey">API Key（服务端配置了 API_KEYS 时必填，仅存于本机 localStorage）</label>
+            <input id="apikey" type="password" autocomplete="off" placeholder="可选">
+          </div>
+          <div>
+            <label for="mode">运行模式</label>
+            <select id="mode">
+              <option value="stream">流式（SSE，可看到每一步）</option>
+              <option value="sync">同步（一次性返回）</option>
+            </select>
+          </div>
+        </div>
+      </details>
+      <div class="row">
+        <button id="btn" type="submit">开始分析</button>
+        <button id="cancel" type="button" class="ghost hidden">停止接收</button>
+        <span class="status" id="status">就绪</span>
+      </div>
+      <p class="status" style="margin-top:10px">只读边界：仅访问 api.github.com 的公开 Issue / 评论 / README / 搜索接口。</p>
+    </form>
+  </section>
+
+  <div id="result" class="cols hidden">
+    <div>
+      <section class="panel">
+        <div class="row" style="margin-top:0"><b style="font-size:13px">执行轨迹</b>
+          <span class="status" id="traceMeta"></span></div>
+        <div class="trace" id="trace"></div>
+      </section>
+      <section class="panel">
+        <b style="font-size:13px">证据来源</b>
+        <div id="evidence"></div>
+      </section>
+    </div>
+    <div>
+      <section class="panel">
+        <div class="chips" id="chips"></div>
+        <div id="warnings"></div>
+        <div class="report" id="report"></div>
+        <div class="fb">
+          <span class="status">这个报告有帮助吗？</span>
+          <button class="ghost" type="button" data-fb="1">👍 有帮助</button>
+          <button class="ghost" type="button" data-fb="-1">👎 没帮助</button>
+          <span class="status" id="fbStatus"></span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <footer>
+    指标口径与已知限制见 README 与 docs/EVALUATION.md。报告为待验证假设，最终结论需工程师复现确认。
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = {runId: null, result: null, stopped: false};
+
+function esc(text) {
+  return String(text == null ? "" : text).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function md(text) {
+  const lines = String(text == null ? "" : text).split("\n");
+  const out = [];
+  let inList = false, inQuote = false;
+  const inline = (s) => esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  const closeBlocks = () => {
+    if (inList) { out.push("</ul>"); inList = false; }
+    if (inQuote) { out.push("</blockquote>"); inQuote = false; }
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) { closeBlocks(); continue; }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { closeBlocks(); out.push("<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"); continue; }
+    if (/^---+$/.test(line)) { closeBlocks(); out.push("<hr>"); continue; }
+    if (/^>\s?/.test(line)) {
+      if (!inQuote) { closeBlocks(); out.push("<blockquote>"); inQuote = true; }
+      out.push("<p>" + inline(line.replace(/^>\s?/, "")) + "</p>"); continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      if (!inList) { closeBlocks(); out.push("<ul>"); inList = true; }
+      out.push("<li>" + inline(line.replace(/^[-*]\s+/, "")) + "</li>"); continue;
+    }
+    closeBlocks();
+    out.push("<p>" + inline(line) + "</p>");
+  }
+  closeBlocks();
+  return out.join("\n");
+}
+
+function chip(label, value) {
+  return '<span class="chip">' + esc(label) + ' <b>' + esc(value) + "</b></span>";
+}
+function apiKey() {
+  const key = $("apikey").value.trim();
+  if (key) localStorage.setItem("issue_agent_key", key);
+  return key || localStorage.getItem("issue_agent_key") || "";
+}
+function headers(extra) {
+  const h = Object.assign({ "Content-Type": "application/json" }, extra || {});
+  const key = apiKey();
+  if (key) h["X-API-Key"] = key;
+  return h;
+}
+function setStatus(text, ok) {
+  $("status").textContent = text;
+  $("status").style.color = ok ? "var(--ok)" : "var(--muted)";
+}
+function showError(message) {
+  $("status").textContent = "错误：" + message;
+  $("status").style.color = "var(--bad)";
+}
+
+function addTrace(kind, name, ms, status) {
+  const row = document.createElement("div");
+  row.className = "trow" + (status === "error" ? " err" : "");
+  row.innerHTML = '<span class="kind">' + esc(kind || "") + "</span>" +
+    '<span class="nm">' + esc(name || "") + "</span>" +
+    '<span class="ms">' + (ms == null ? "…" : ms + "ms") + "</span>";
+  $("trace").appendChild(row);
+  $("trace").scrollTop = $("trace").scrollHeight;
+  return row;
+}
+
+function renderResult(result) {
+  state.result = result;
+  state.runId = result.run_id;
+  $("result").classList.remove("hidden");
+  $("report").innerHTML = md(result.report || "（无报告）");
+  const m = result.metrics || {};
+  $("chips").innerHTML = [
+    chip("状态", result.status),
+    chip("检索轮次", m.rounds || 0),
+    chip("工具调用", m.tool_calls || 0),
+    chip("Token", m.tokens_total || 0),
+    chip("耗时", (((m.duration_ms || 0) / 1000).toFixed(2)) + "s"),
+    chip("证据", (result.evidence || []).length)
+  ].join("");
+  const warnings = (result.warnings || []).filter(Boolean);
+  $("warnings").innerHTML = warnings.length
+    ? '<ul class="warnlist">' + warnings.map((w) => "<li>" + esc(w) + "</li>").join("") + "</ul>"
+    : "";
+  $("evidence").replaceChildren();
+  for (const item of result.evidence || []) {
+    const row = document.createElement("div");
+    row.className = "ev";
+    const risk = (item.risk || 0) >= 0.5 ? '<span class="tag risk">含可疑指令</span>' : "";
+    row.innerHTML = '<span class="id">' + esc(item.id) + "</span><div>" +
+      '<a href="' + esc(item.url) + '" target="_blank" rel="noopener noreferrer">' + esc(item.title) + "</a>" +
+      '<span class="tag">' + esc(item.kind) + "</span>" + risk +
+      '<div class="meta">' + esc(item.snippet || "") + "</div></div>";
+    $("evidence").appendChild(row);
+  }
+  if (!$("trace").childElementCount) {
+    for (const item of result.trace || []) addTrace(item.node, item.detail, item.duration_ms, item.status);
+  }
+  $("traceMeta").textContent = (result.trace || []).length + " 个节点｜run " + String(result.run_id || "").slice(0, 8);
+  $("fbStatus").textContent = "";
+}
+
+async function runStream(payload) {
+  $("trace").replaceChildren();
+  $("result").classList.add("hidden");
+  state.stopped = false;
+  const res = await fetch("/api/v1/jobs", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+  const job = await res.json();
+  if (!res.ok) throw new Error((job && job.detail && job.detail.message) || "创建作业失败");
+  setStatus("已创建作业，正在执行…");
+  const controller = new AbortController();
+  $("cancel").classList.remove("hidden");
+  $("cancel").onclick = () => { state.stopped = true; controller.abort(); setStatus("已停止接收（服务端仍会完成）"); };
+  const resp = await fetch("/api/v1/jobs/" + job.job_id + "/events", { headers: headers(), signal: controller.signal });
+  if (!resp.ok || !resp.body) throw new Error("事件流连接失败");
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  const running = new Map();
+  let buffer = "";
+  let finished = false;
+  while (!finished) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    let index;
+    while ((index = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+      let event = "message", data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) continue;
+      let obj;
+      try { obj = JSON.parse(data); } catch (err) { continue; }
+      if (event === "span_start") {
+        running.set((obj.kind || "") + "|" + obj.name, addTrace(obj.kind, obj.name, null, "running"));
+      } else if (event === "span") {
+        const key = (obj.kind || "") + "|" + obj.name;
+        const row = running.get(key);
+        if (row && row.isConnected && row.querySelector(".ms").textContent === "…") {
+          row.querySelector(".ms").textContent = (obj.duration_ms || 0) + "ms";
+          if (obj.status === "error") row.classList.add("err");
+        } else {
+          addTrace(obj.kind, obj.name, obj.duration_ms, obj.status);
+        }
+      } else if (event === "final") {
+        renderResult(obj.result || {});
+        setStatus("分析完成", true);
+      } else if (event === "error") {
+        showError(obj.error || "执行失败");
+      } else if (event === "end") {
+        finished = true;
+      }
+    }
+  }
+  $("cancel").classList.add("hidden");
+}
+
+async function runSync(payload) {
+  const res = await fetch("/api/v1/analyze", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+  const data = await res.json();
+  if (!res.ok) {
+    const detail = data && (data.detail || data.error);
+    throw new Error((detail && (detail.message || detail.code)) || "请求失败");
+  }
+  renderResult(data);
+  setStatus("分析完成", true);
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("btn");
+  btn.disabled = true;
+  setStatus("执行中…");
+  $("result").classList.add("hidden");
+  const payload = {
+    repo: $("repo").value.trim(),
+    issue_number: Number($("issue").value),
+    user_context: $("context").value.trim()
+  };
+  try {
+    apiKey();
+    if ($("mode").value === "sync") await runSync(payload);
+    else await runStream(payload);
+  } catch (err) {
+    if (err.name !== "AbortError") showError(err.message || String(err));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.querySelectorAll("[data-fb]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    if (!state.runId) return;
+    try {
+      const res = await fetch("/api/v1/feedback", {
+        method: "POST", headers: headers(),
+        body: JSON.stringify({ run_id: state.runId, rating: Number(button.dataset.fb), comment: "" })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data && data.detail && data.detail.message) || "提交失败");
+      $("fbStatus").textContent = "已记录，感谢反馈";
+    } catch (err) { $("fbStatus").textContent = err.message; }
+  });
+});
+
+(async function init() {
+  $("apikey").value = localStorage.getItem("issue_agent_key") || "";
+  try {
+    const meta = await (await fetch("/api/v1/meta")).json();
+    $("modelBadge").textContent = meta.llm_model + " · " + meta.env;
+    const b = meta.budgets;
+    $("budgetBadge").textContent = "预算 " + b.max_rounds + " 轮 / " + b.max_tool_calls + " 工具 / $" + b.cost_budget_usd;
+  } catch (err) { $("modelBadge").textContent = "服务未就绪"; }
+})();
+</script>
+</body></html>

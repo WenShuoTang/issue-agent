@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Privacy / secret preflight
+        run: python scripts/preflight.py
+      - name: Compile check
+        run: python -m compileall -q issue_agent
+      - name: Offline tests (no API key, no network)
+        run: python -m unittest discover -s tests -t . -v
+      - name: Eval regression gate (pipeline metrics only)
+        run: python -m issue_agent.eval.runner --offline --min-recall 0.5 --min-citation 0.9
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: data/eval/*.json
+          if-no-files-found: warn
