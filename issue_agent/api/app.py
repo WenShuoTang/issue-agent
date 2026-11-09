@@ -18,11 +18,12 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
-from ..config import Settings, load_settings
+from ..config import ConfigError, Settings, load_settings
 from ..agent.prompts import PROMPT_FINGERPRINT
-from ..errors import AgentError, NotFoundError
+from ..errors import AgentError, NotFoundError, ValidationError
 from ..obs.logs import configure_logging, get_logger
 from ..obs.metrics import METRICS
+from ..providers import list_presets
 from ..results import analysis_key
 from ..tools.github_tools import validate_repo
 from .jobs import JobManager, sse_format
@@ -31,6 +32,38 @@ from .security import ApiKeyAuthenticator, RateLimiter, http_exception_for, requ
 
 log = get_logger("issue_agent.api")
 TERMINAL = {"succeeded", "partial", "failed"}
+
+
+def _llm_override(req: AnalyzeRequest) -> dict | None:
+    """把请求里的 LLMOverride 转成 runner 可用的字典（Key 只存在于内存）。
+
+    注意：不把 ``SecretStr`` 直接 model_dump，避免把密钥对象带进其他结构或日志。
+    """
+    if req.llm is None:
+        return None
+    override: dict = {}
+    if req.llm.provider:
+        override["provider"] = req.llm.provider
+    if req.llm.model:
+        override["model"] = req.llm.model
+    if req.llm.api_key:
+        override["api_key"] = req.llm.api_key.get_secret_value()
+    return override or None
+
+
+def _resolve_llm(runner, req: AnalyzeRequest) -> tuple[dict | None, Settings]:
+    """校验并解析本次请求的 LLM 配置；非法/缺 Key 时返回 400 而不是 502。"""
+    override = _llm_override(req)
+    try:
+        effective = runner.settings.for_llm(**override) if override else runner.settings
+    except ConfigError as exc:
+        raise ValidationError(str(exc)) from exc
+    # 只有真实客户端（非测试注入）才做 Key 预检；否则离线评测/单测会被挡住。
+    if not runner.llm_is_injected and effective.llm_requires_key and not effective.llm_api_key:
+        raise ValidationError(
+            f"供应商 {effective.llm_provider} 需要 API Key：请在页面填写，"
+            "或在服务端配置默认 Key（docs/PROVIDERS.md）")
+    return override, effective
 
 
 def create_app(settings: Settings | None = None, *, runner=None,
@@ -112,27 +145,38 @@ def create_app(settings: Settings | None = None, *, runner=None,
 
     @app.get("/api/v1/meta")
     def meta() -> dict:
-        return {**settings.describe(), "version": app.version}
+        return {
+            **settings.describe(),
+            "default_provider": settings.llm_provider,
+            "providers": [{"name": preset.name, "label": preset.label,
+                           "kind": preset.kind, "default_model": preset.default_model,
+                           "requires_key": preset.requires_key,
+                           "docs_url": preset.docs_url} for preset in list_presets()],
+            "version": app.version,
+        }
 
     # ---------------------------------------------------------------- 分析
     @app.post("/api/v1/analyze")
     def analyze(req: AnalyzeRequest, request: Request,
                 tenant: str = Depends(require_tenant)) -> dict:
         limiter.check(tenant)
+        override, _ = _resolve_llm(runner, req)
         try:
             return runner.run(req.repo, req.issue_number, user_context=req.user_context,
-                              tenant=tenant)
+                              tenant=tenant, llm_override=override)
         except AgentError as exc:
             raise http_exception_for(exc, getattr(request.state, "request_id", "")) from exc
 
     @app.post("/api/v1/jobs", response_model=JobCreated)
     def create_job(req: AnalyzeRequest, tenant: str = Depends(require_tenant)) -> JobCreated:
         limiter.check(tenant)
+        override, effective = _resolve_llm(runner, req)
 
         def work(emit) -> dict:
             final: dict = {}
             for event in runner.stream(req.repo, req.issue_number,
-                                       user_context=req.user_context, tenant=tenant):
+                                       user_context=req.user_context, tenant=tenant,
+                                       llm_override=override):
                 emit(event)
                 if event.get("event") == "final":
                     final = event.get("result") or {}
@@ -142,10 +186,11 @@ def create_app(settings: Settings | None = None, *, runner=None,
             normalized = validate_repo(req.repo)
         except Exception:
             normalized = req.repo
+        # 去重键只包含供应商/模型，不包含 Key（同一模型的不同 Key 可共享结果）。
         job = manager.submit(tenant, work, dedupe_key=analysis_key(
             tenant=tenant, repo=normalized, issue_number=req.issue_number,
-            user_context=req.user_context, provider=settings.llm_provider,
-            model=settings.llm_model, prompt_fingerprint=PROMPT_FINGERPRINT))
+            user_context=req.user_context, provider=effective.llm_provider,
+            model=effective.llm_model, prompt_fingerprint=PROMPT_FINGERPRINT))
         return JobCreated(job_id=job.job_id, status=job.status,
                           events_url=f"/api/v1/jobs/{job.job_id}/events")
 

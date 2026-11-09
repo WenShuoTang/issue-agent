@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import tempfile
+from pathlib import Path
 import time
 import unittest
+from unittest.mock import PropertyMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -92,6 +94,65 @@ class TestApi(unittest.TestCase):
                                      json={"repo": "example/tool", "issue_number": 17})
                 self.assertEqual(second.status_code, 429)
                 self.assertEqual(second.json()["error"]["code"], "rate_limited")
+
+    def test_ui_has_byok_controls(self):
+        html = (Path(__file__).resolve().parent.parent / "issue_agent" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn('id="provider"', html)
+        self.assertIn("payload.llm", html)
+        self.assertIn("不保存", html)
+
+    def test_meta_exposes_provider_presets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, _ = _app(folder, api_keys={VALID_KEY: "acme"})
+            with TestClient(app) as client:
+                meta = client.get("/api/v1/meta").json()
+        self.assertEqual(meta["default_provider"], "deepseek")
+        names = {item["name"] for item in meta["providers"]}
+        self.assertTrue({"deepseek", "openai", "anthropic", "ollama"} <= names)
+        self.assertNotIn("sk-", json.dumps(meta))
+
+    def test_byok_override_is_used_and_key_not_echoed(self):
+        secret = "sk-byok-test-secret-1234567890"
+        with tempfile.TemporaryDirectory() as folder:
+            app, _ = _app(folder, api_keys={VALID_KEY: "acme"})
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/analyze", headers={"X-API-Key": VALID_KEY},
+                    json={"repo": "example/tool", "issue_number": 17,
+                          "llm": {"provider": "openai", "api_key": secret,
+                                  "model": "gpt-4o-mini"}})
+                self.assertEqual(response.status_code, 200, response.text)
+                text = response.text
+                body = response.json()
+        self.assertEqual(body["metrics"]["provider"], "openai")
+        self.assertEqual(body["metrics"]["model"], "gpt-4o-mini")
+        self.assertNotIn(secret, text)
+        self.assertNotIn("sk-", text)
+
+    def test_byok_requires_key_when_server_has_none(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, runner = _app(folder, api_keys={VALID_KEY: "acme"})
+            # 模拟"真实客户端"（非测试注入），触发 Key 预校验
+            with patch.object(type(runner), "llm_is_injected",
+                              new_callable=PropertyMock, return_value=False):
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/api/v1/analyze", headers={"X-API-Key": VALID_KEY},
+                        json={"repo": "example/tool", "issue_number": 17,
+                              "llm": {"provider": "openai"}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("需要 API Key", response.json()["error"]["message"])
+
+    def test_unknown_provider_returns_400(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, _ = _app(folder, api_keys={VALID_KEY: "acme"})
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/analyze", headers={"X-API-Key": VALID_KEY},
+                    json={"repo": "example/tool", "issue_number": 17,
+                          "llm": {"provider": "no-such-provider"}})
+        self.assertEqual(response.status_code, 400)
 
     def test_analyze_reuses_result_cache(self):
         with tempfile.TemporaryDirectory() as folder:

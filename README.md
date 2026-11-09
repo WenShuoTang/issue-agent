@@ -1,4 +1,12 @@
-# GitHub Issue 排障 Agent（端到端 Agentic RAG 项目）
+<p align="center">
+  <img src="docs/assets/logo-256.png" width="96" alt="Issue Triage Agent logo">
+</p>
+
+<h1 align="center">GitHub Issue 排障 Agent（端到端 Agentic RAG 项目）</h1>
+
+<p align="center">
+  <img src="docs/assets/social-preview.png" width="880" alt="Issue Triage Agent">
+</p>
 
 > 输入一个 `owner/repo` + Issue 编号，Agent 自主读 Issue、规划检索、调用只读工具收集证据、
 > 自我评估证据是否够用、写出带原始链接的排障假设，并在发布前用"审查员"剔除无依据结论。
@@ -37,6 +45,11 @@ SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。无需 Docker、Redis
 
 ## 2. 架构
 
+![Architecture](docs/assets/architecture.svg)
+
+<details>
+<summary>同等内容的 ASCII 版本（便于纯文本环境阅读）</summary>
+
 ```
 ┌────────────────────────────── Web UI (index.html, SSE) ──────────────────────────────┐
 │ 表单 → POST /api/v1/jobs → GET /api/v1/jobs/{id}/events（流式 trace）→ 报告 + 反馈     │
@@ -62,6 +75,8 @@ SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。无需 Docker、Redis
 │ GitHub 只读客户端：ETag 条件请求 · TTL 缓存 · 分页 · 退避重试 · 限流识别 · 出口白名单  │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 ---
 
@@ -151,6 +166,36 @@ curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/rate_lim
 > Token 只显示一次，请立刻保存；不要提交到 Git。详细步骤（含 classic token 方案与安全建议）
 > 见 [docs/PROVIDERS.md#4-github-token-申请步骤重要](docs/PROVIDERS.md#4-github-token-申请步骤重要)。
 
+### 4.3 在前端使用自己的模型 Key（BYOK）
+
+![UI preview](docs/assets/ui-preview.png)
+
+<sub>界面示意图：左栏选择供应商并填 Key，中栏实时执行轨迹，右栏带引用的报告。</sub>
+
+打开页面后可以直接选择供应商并填自己的 Key，**无需改服务端配置**：
+
+1. **大模型供应商**：选 `OpenAI` / `Claude` / `通义千问` / `Ollama` 等（留空则用服务器默认）；
+2. **API Key**：填对应厂商的 Key（仅随本次请求发送，**不落盘、不进日志、不进 trace**）；
+3. **高级 → 模型名**：可选，留空用该供应商默认模型；
+4. 点「开始分析」，报告顶部的指标会显示本次实际使用的 `provider / model`。
+
+也可以通过 API 传：
+
+```json
+POST /api/v1/analyze
+{
+  "repo": "idosal/git-mcp",
+  "issue_number": 214,
+  "llm": {"provider": "openai", "model": "gpt-4o-mini", "api_key": "sk-..."}
+}
+```
+
+安全约束：
+- **不允许前端指定 base_url**（避免服务端被当成 SSRF 跳板），自建网关请用服务端 `LLM_BASE_URL`；
+- 用户 Key 只在该次运行的 `Settings` 副本中存在，不写数据库、不写结果缓存、不写 trace；
+- 选择其他供应商但没填 Key 时返回 **400** 并提示，而不是 500；
+- 服务端限流仍然生效，防止 BYOK 被用来刷服务器资源。
+
 ### Docker（可选）
 
 ```bash
@@ -205,7 +250,7 @@ python -m issue_agent.eval.runner --offline
 | 引用有效率 | 1.000 | 引用 ID 必须真实存在（幻觉引用 = 0） |
 | 引用覆盖率 | 1.000 | 有证据支撑的假设比例 |
 | P50 / P95 延迟 | ≈1.0s / 1.2s | 含本地 SQLite 开销，不含真实模型推理 |
-| 测试 | 89 个离线用例 | `python -m unittest discover -s tests -t .` |
+| 测试 | 99 个离线用例 | `python -m unittest discover -s tests -t .` |
 
 真实链路冒烟（`idosal/git-mcp#214`，真实 GitHub + DeepSeek）：一次成功运行 **53s / 29.4k token /
 14 次 LLM 调用 / 8 次工具调用 / 2 轮检索**，期间自动触发一次依据性重写。
@@ -292,6 +337,7 @@ docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md SECURITY.md RESUME.m
 | 文档 | 内容 |
 |---|---|
 | [docs/PROVIDERS.md](docs/PROVIDERS.md) | **12 家大模型的接入与 Key 申请**、GitHub Token 申请、兼容性矩阵、报错排查 |
+| [docs/IMAGES.md](docs/IMAGES.md) | **配图绘制提示词**（架构图 / Social Preview / UI 概念图 / Logo）+ 可渲染 Mermaid |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 状态机、工具协议、检索/记忆/上下文设计、并发模型、关键取舍 |
 | [docs/PRODUCTION.md](docs/PRODUCTION.md) | **真实业务落地问题清单与解法**、容量估算、SLO、上线检查表 |
 | [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | **按实现阶段**梳理问题：公网流量、重复请求复用、RAG 召回失败、运营迭代 |

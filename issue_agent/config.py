@@ -195,6 +195,40 @@ class Settings:
     def with_overrides(self, **kwargs) -> "Settings":
         return replace(self, **kwargs)
 
+    def for_llm(self, *, provider: str | None = None, model: str | None = None,
+                api_key: str | None = None) -> "Settings":
+        """按单次请求的供应商/模型/Key 派生一份 Settings（不修改全局配置）。
+
+        安全约束：
+        - **不允许**客户端指定 base_url，避免服务端被当成 SSRF 跳板；
+        - Key 只存在于本次运行的 Settings 对象里，不落盘、不进结果、不进 trace；
+        - 未显式给 Key 且供应商与服务器默认一致时，复用服务器 Key（方便自部署）。
+        """
+        if not provider and not model and api_key is None:
+            return self
+        name = (provider or self.llm_provider).strip().lower()
+        try:
+            preset = get_preset(name)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+        same = preset.name == self.llm_provider
+        key = api_key if api_key is not None else (self.llm_api_key if same else "")
+        chosen_model = (model or "").strip()[:120] or (
+            self.llm_model if same else preset.default_model)
+        return replace(
+            self,
+            llm_provider=preset.name,
+            llm_kind=preset.kind,
+            llm_api_key=key,
+            llm_key_env=preset.api_key_env,
+            llm_requires_key=preset.requires_key,
+            llm_model=chosen_model,
+            # 同供应商保留服务器配置（可能是自建/代理地址），跨供应商用预设地址。
+            llm_base_url=self.llm_base_url if same else preset.base_url,
+            llm_thinking_disable=(self.llm_thinking_disable if same
+                                  else preset.name == "deepseek"),
+        )
+
 
 def _parse_api_keys(raw: str) -> dict[str, str]:
     keys: dict[str, str] = {}

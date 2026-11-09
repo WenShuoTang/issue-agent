@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GitHub Issue 排障 Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1220'/%3E%3Ccircle cx='28' cy='27' r='14' fill='none' stroke='%234fd1b5' stroke-width='4'/%3E%3Cpath d='M38 37l9 9' stroke='%234fd1b5' stroke-width='4' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='25' r='3' fill='%234fd1b5'/%3E%3Ccircle cx='33' cy='21' r='3' fill='%234fd1b5'/%3E%3Ccircle cx='33' cy='32' r='3' fill='%234fd1b5'/%3E%3Cpath d='M23 25h6l4-4M29 25l4 7h0' stroke='%234fd1b5' stroke-width='2.5' fill='none'/%3E%3C/svg%3E">
 <style>
   :root{color-scheme:dark;--bg:#0b1220;--panel:#131c2b;--panel-2:#0f1725;--line:#26374d;
         --text:#e8eef7;--muted:#95a5bb;--accent:#4fd1b5;--warn:#f0b37e;--bad:#f08e8e;--ok:#7ee2a8;
@@ -85,11 +86,36 @@
       <label for="context">补充信息（可选：本机版本 / 报错环境 / 已尝试步骤）</label>
       <textarea id="context" rows="3" maxlength="600"
         placeholder="例如：Windows 11 / Python 3.11，运行到第 2 步连接 MCP server 时超时"></textarea>
+
+      <div class="grid" style="margin-top:14px">
+        <div>
+          <label for="provider">大模型供应商（自带 Key，可选）</label>
+          <select id="provider">
+            <option value="">使用服务器默认配置</option>
+          </select>
+        </div>
+        <div>
+          <label for="llmKey">该供应商的 API Key（仅本次请求使用，不保存）</label>
+          <input id="llmKey" type="password" autocomplete="off"
+                 placeholder="留空则使用服务器默认 Key">
+        </div>
+      </div>
+      <details style="margin-top:10px">
+        <summary class="status" style="cursor:pointer">高级：指定模型名</summary>
+        <div style="margin-top:10px">
+          <label for="llmModel">模型名（留空使用该供应商默认模型）</label>
+          <input id="llmModel" autocomplete="off" placeholder="例如 gpt-4o-mini / qwen-plus / claude-sonnet-4-5">
+        </div>
+        <p class="status" style="margin-top:8px" id="providerHint">
+          自带 Key 只用于本次分析，不会写入数据库或日志；服务端地址由部署方固定，页面无法指定。
+        </p>
+      </details>
+
       <details style="margin-top:12px">
         <summary class="status" style="cursor:pointer">鉴权与高级选项</summary>
         <div class="grid" style="margin-top:10px">
           <div>
-            <label for="apikey">API Key（服务端配置了 API_KEYS 时必填，仅存于本机 localStorage）</label>
+            <label for="apikey">服务 API Key（服务端配置了 API_KEYS 时必填，仅存于本机 localStorage）</label>
             <input id="apikey" type="password" autocomplete="off" placeholder="可选">
           </div>
           <div>
@@ -226,6 +252,7 @@ function renderResult(result) {
   const m = result.metrics || {};
   $("chips").innerHTML = [
     chip("状态", result.status),
+    chip("模型", (m.provider || "server") + " / " + (m.model || "default")),
     chip("检索轮次", m.rounds || 0),
     chip("工具调用", m.tool_calls || 0),
     chip("Token", m.tokens_total || 0),
@@ -334,6 +361,19 @@ $("form").addEventListener("submit", async (e) => {
     issue_number: Number($("issue").value),
     user_context: $("context").value.trim()
   };
+  const provider = $("provider").value;
+  const llmKey = $("llmKey").value.trim();
+  const llmModel = $("llmModel").value.trim();
+  if (provider || llmKey || llmModel) {
+    payload.llm = {};
+    if (provider) payload.llm.provider = provider;
+    if (llmKey) payload.llm.api_key = llmKey;
+    if (llmModel) payload.llm.model = llmModel;
+  }
+  // 只记住供应商与模型名，绝不把 Key 写进 localStorage / sessionStorage。
+  if (provider) localStorage.setItem("issue_agent_provider", provider);
+  if (llmModel) localStorage.setItem("issue_agent_model", llmModel);
+  else localStorage.removeItem("issue_agent_model");
   try {
     apiKey();
     if ($("mode").value === "sync") await runSync(payload);
@@ -364,9 +404,41 @@ document.querySelectorAll("[data-fb]").forEach((button) => {
   $("apikey").value = localStorage.getItem("issue_agent_key") || "";
   try {
     const meta = await (await fetch("/api/v1/meta")).json();
-    $("modelBadge").textContent = meta.llm_model + " · " + meta.env;
+    $("modelBadge").textContent = meta.llm_provider.name + " / " + meta.llm_model + " · " + meta.env;
     const b = meta.budgets;
     $("budgetBadge").textContent = "预算 " + b.max_rounds + " 轮 / " + b.max_tool_calls + " 工具 / $" + b.cost_budget_usd;
+
+    // 供应商下拉由服务端预设生成，前端不硬编码厂商列表。
+    const select = $("provider");
+    for (const p of meta.providers || []) {
+      const option = document.createElement("option");
+      option.value = p.name;
+      option.textContent = p.label + (p.requires_key ? "" : "（本地/无需 Key）");
+      option.dataset.defaultModel = p.default_model;
+      option.dataset.requiresKey = p.requires_key ? "1" : "0";
+      option.dataset.docs = p.docs_url || "";
+      select.appendChild(option);
+    }
+    const savedProvider = localStorage.getItem("issue_agent_provider") || "";
+    if (savedProvider && [...select.options].some((o) => o.value === savedProvider)) {
+      select.value = savedProvider;
+    }
+    $("llmModel").value = localStorage.getItem("issue_agent_model") || "";
+    select.addEventListener("change", () => {
+      const option = select.selectedOptions[0];
+      const hint = $("providerHint");
+      if (!option || !option.value) {
+        $("llmKey").placeholder = "留空则使用服务器默认 Key";
+        hint.textContent = "自带 Key 只用于本次分析，不会写入数据库或日志；服务端地址由部署方固定，页面无法指定。";
+        $("llmModel").placeholder = "例如 gpt-4o-mini / qwen-plus / claude-sonnet-4-5";
+        return;
+      }
+      $("llmKey").placeholder = option.dataset.requiresKey === "1"
+        ? "该供应商需要 API Key" : "该供应商无需 Key";
+      $("llmModel").placeholder = "默认：" + option.dataset.defaultModel;
+      hint.textContent = "Key 仅随本次请求发送，不落盘、不出现在日志/追踪里；切换供应商请填写对应厂商的 Key。"
+        + (option.dataset.docs ? " 申请地址见 docs/PROVIDERS.md 或厂商控制台。" : "");
+    });
   } catch (err) { $("modelBadge").textContent = "服务未就绪"; }
 })();
 </script>

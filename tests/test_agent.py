@@ -366,6 +366,23 @@ class TestResultReuse(unittest.TestCase):
         self.assertNotEqual(k_deepseek, k_other_model)
         self.assertEqual(k_deepseek, analysis_key(provider="deepseek", **base))
 
+    def test_llm_override_is_isolated_from_server_cache(self):
+        override = {"provider": "openai", "api_key": "sk-test-override-123456",
+                    "model": "gpt-4o-mini"}
+        with tempfile.TemporaryDirectory() as folder:
+            runner = _runner(folder, HeuristicLLM())
+            try:
+                first = runner.run(REPO, ISSUE, tenant="t1")
+                second = runner.run(REPO, ISSUE, tenant="t1", llm_override=override)
+                third = runner.run(REPO, ISSUE, tenant="t1", llm_override=override)
+            finally:
+                runner.close()
+        self.assertEqual(first["metrics"]["provider"], "deepseek")
+        self.assertEqual(second["metrics"]["provider"], "openai")
+        self.assertEqual(second["metrics"]["model"], "gpt-4o-mini")
+        self.assertNotIn("cache", second)       # 换模型不能复用服务器默认模型的结果
+        self.assertTrue(third["cache"]["hit"])  # 同一 override 可复用
+
     def test_cache_is_tenant_scoped(self):
         with tempfile.TemporaryDirectory() as folder:
             runner = _runner(folder, HeuristicLLM())

@@ -79,6 +79,36 @@ class TestProviderPresets(unittest.TestCase):
         # 没有 Key 也应能构造客户端（真正调用时才需要本地服务在线）
         LLMClient(settings.with_overrides(llm_api_key=""))
 
+    def test_for_llm_switch_provider_uses_preset(self):
+        settings = Settings(llm_provider="deepseek", llm_kind="openai",
+                            llm_api_key="server-key", llm_model="deepseek-flash",
+                            llm_base_url="https://api.deepseek.com")
+        switched = settings.for_llm(provider="openai", api_key="sk-user-key",
+                                    model="gpt-4o-mini")
+        self.assertEqual(switched.llm_provider, "openai")
+        self.assertEqual(switched.llm_base_url, "https://api.openai.com/v1")
+        self.assertEqual(switched.llm_model, "gpt-4o-mini")
+        self.assertEqual(switched.llm_api_key, "sk-user-key")
+        self.assertTrue(switched.llm_requires_key)
+
+    def test_for_llm_same_provider_keeps_server_endpoint(self):
+        settings = Settings(llm_provider="custom", llm_kind="openai",
+                            llm_api_key="server-key", llm_model="internal",
+                            llm_base_url="http://10.0.0.5:8000/v1")
+        same = settings.for_llm(provider="custom", model="internal-v2")
+        self.assertEqual(same.llm_base_url, "http://10.0.0.5:8000/v1")
+        self.assertEqual(same.llm_api_key, "server-key")
+        self.assertEqual(same.llm_model, "internal-v2")
+
+    def test_for_llm_other_provider_without_key_has_no_key(self):
+        settings = Settings(llm_provider="deepseek", llm_api_key="server-key")
+        switched = settings.for_llm(provider="openai")
+        self.assertEqual(switched.llm_api_key, "")
+
+    def test_for_llm_rejects_unknown_provider(self):
+        with self.assertRaises(ConfigError):
+            Settings().for_llm(provider="nope")
+
     def test_custom_provider_requires_explicit_endpoint(self):
         env = {"LLM_PROVIDER": "custom", "LLM_BASE_URL": "http://10.0.0.5:8000/v1",
                "LLM_MODEL": "internal-model", "LLM_API_KEY": "internal-key-123456"}

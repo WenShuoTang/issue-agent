@@ -70,6 +70,45 @@ LLM_MODEL=internal-qwen
 LLM_API_KEY=internal-key
 ```
 
+### 2.1 前端「自带 Key」（BYOK）
+
+不想把 Key 配到服务器时，可以直接在网页上选供应商、填 Key：
+
+1. 打开 <http://127.0.0.1:8000>；
+2. **大模型供应商** 选择目标厂商（列表由服务端 `/api/v1/meta` 动态下发）；
+3. **API Key** 填入该厂商 Key（输入框为密码类型）；
+4. 可选：展开「高级」填模型名；
+5. 开始分析。报告指标里会显示本次实际使用的 `provider / model`。
+
+对应 API：
+
+```http
+POST /api/v1/analyze
+Content-Type: application/json
+
+{
+  "repo": "idosal/git-mcp",
+  "issue_number": 214,
+  "llm": {"provider": "qwen", "model": "qwen-plus", "api_key": "sk-..."}
+}
+```
+
+行为与安全约束：
+
+| 规则 | 说明 |
+|---|---|
+| Key 生命周期 | 只存在于该次请求的 Settings 副本，运行结束即丢弃 |
+| 不落盘 | 不写数据库、不写结果缓存、不写 trace JSONL、不进日志 |
+| 不回显 | 响应里只返回 provider/model，不含 Key；`SecretStr` 防误打印 |
+| 不能指定 base_url | 防止服务端被当成 SSRF 跳板；自建端点必须服务端配置 |
+| 缺 Key 时 | 返回 **400** 并提示，不会静默回退到服务器 Key |
+| 与服务器默认同厂商 | 不填 Key 时复用服务器 Key（方便自部署） |
+| 限流/预算 | 仍按服务端配置执行，BYOK 不能绕过 |
+
+> 多租户公网部署时注意：结果缓存按 `tenant + provider + model + Prompt 指纹` 复用。
+> 若不同用户使用各自 Key 但同属一个 tenant，会共享同一份结果——这通常没问题，
+> 但如果你要求"谁的 Key 只产生谁的结果"，请按 API Key 划分 tenant。
+
 ---
 
 ## 3. 各厂商 Key 申请步骤

@@ -69,13 +69,19 @@ class AgentRunner:
             self._github = GitHubClient(settings=self.settings)
         return self._github
 
-    def _make_llm(self, budget: Budget, tracer: Tracer) -> Any:
+    def _make_llm(self, budget: Budget, tracer: Tracer, settings: Settings | None = None) -> Any:
         if self._llm is not None:
             # 注入的 LLM（测试替身）也要受同一套预算约束，否则预算测试会失真。
             if hasattr(self._llm, "budget"):
                 self._llm.budget = budget
             return self._llm
-        return LLMClient(self.settings, budget=budget, cache=self.llm_cache, tracer=tracer)
+        return LLMClient(settings or self.settings, budget=budget,
+                         cache=self.llm_cache, tracer=tracer)
+
+    @property
+    def llm_is_injected(self) -> bool:
+        """测试/嵌入场景会注入 LLM 替身；此时不做 Key 预校验。"""
+        return self._llm is not None
 
     def close(self) -> None:
         if self._github is not None and self._owns_github:
@@ -92,14 +98,23 @@ class AgentRunner:
     def run(self, repo: str, issue_number: int, *, user_context: str = "",
             tenant: str = "local", session_id: str | None = None,
             sink=None, start: str = "ingest",
-            resume_state: dict | None = None, use_cache: bool = True) -> dict:
+            resume_state: dict | None = None, use_cache: bool = True,
+            llm_override: dict | None = None) -> dict:
         """带结果缓存与并发合并的执行入口。
 
         缓存只对「首轮、非续跑、成功」的分析生效：
         - 失败/降级结果不缓存（避免把一次预算耗尽固化成一个可用答案）；
-        - 缓存键包含租户、模型名与 Prompt 指纹，改 Prompt 或换模型会自动失效。
+        - 缓存键包含租户、供应商、模型与 Prompt 指纹，换模型自动失效。
+
+        ``llm_override`` 支持单次请求自带供应商/模型/Key（BYOK）；Key 只在本次运行内
+        有效，不落盘、不进结果、不进 trace。
         """
         settings = self.settings
+        if llm_override:
+            settings = settings.for_llm(
+                provider=llm_override.get("provider"),
+                model=llm_override.get("model"),
+                api_key=llm_override.get("api_key"))
         tenant_key = (tenant or "local").strip()[:64]
         cache_key = None
         if (use_cache and settings.result_cache_enabled and settings.result_cache_ttl_s > 0
@@ -128,7 +143,8 @@ class AgentRunner:
         def _execute() -> dict:
             return self._run_once(repo, issue_number, user_context=user_context,
                                   tenant=tenant, session_id=session_id, sink=sink,
-                                  start=start, resume_state=resume_state)
+                                  start=start, resume_state=resume_state,
+                                  settings=settings)
 
         if cache_key is not None and sink is None:
             # 缓存击穿保护：并发相同请求只让第一个真正执行。
@@ -154,7 +170,9 @@ class AgentRunner:
     def _run_once(self, repo: str, issue_number: int, *, user_context: str = "",
                   tenant: str = "local", session_id: str | None = None,
                   sink=None, start: str = "ingest",
-                  resume_state: dict | None = None) -> dict:
+                  resume_state: dict | None = None,
+                  settings: Settings | None = None) -> dict:
+        settings = settings or self.settings
         started = time.monotonic()
         repo = validate_repo(repo)
         issue_number = int(issue_number)
@@ -162,29 +180,29 @@ class AgentRunner:
             raise ValidationError("Issue 编号必须是 1 ~ 2147483647 之间的整数")
         tenant = (tenant or "local").strip()[:64]
         context, _ = sanitize_untrusted(user_context or "",
-                                        max_chars=self.settings.max_user_context_chars)
+                                        max_chars=settings.max_user_context_chars)
         context = redact(context)
         session_id = session_id or new_session_id()
         run_id = uuid.uuid4().hex
         tracer = Tracer(sink=sink)
         budget = Budget(
-            max_llm_calls=self.settings.max_llm_calls,
-            max_tokens=self.settings.token_budget,
-            max_cost_usd=self.settings.cost_budget_usd,
-            max_tool_calls=self.settings.max_tool_calls,
-            max_rounds=self.settings.max_rounds,
-            wall_clock_seconds=self.settings.wall_clock_budget_s,
+            max_llm_calls=settings.max_llm_calls,
+            max_tokens=settings.token_budget,
+            max_cost_usd=settings.cost_budget_usd,
+            max_tool_calls=settings.max_tool_calls,
+            max_rounds=settings.max_rounds,
+            wall_clock_seconds=settings.wall_clock_budget_s,
         )
 
         with tracer.span("agent.run", kind="root", repo=repo, issue=issue_number,
                          tenant=tenant, session_id=session_id):
             # 配置级错误（缺少 Key / SDK 不可用）直接上抛，交由 API 返回 5xx；
             # 运行期错误一律转成可读的失败/降级结果，不让进程崩、不返回裸 500。
-            llm = self._make_llm(budget, tracer)
+            llm = self._make_llm(budget, tracer, settings)
             try:
-                runtime = self._build_runtime(llm, tracer, budget)
+                runtime = self._build_runtime(llm, tracer, budget, settings)
                 nodes = AgentNodes(runtime)
-                graph = build_graph(nodes, self.settings, entry=start)
+                graph = build_graph(nodes, settings, entry=start)
                 state: AgentState = resume_state or new_state(
                     repo=repo, issue_number=issue_number, tenant=tenant,
                     session_id=session_id, run_id=run_id, user_context=context)
@@ -204,7 +222,7 @@ class AgentRunner:
                                      "internal_error", started)
 
         return self._result(final, tracer, budget, started, repo, issue_number,
-                            tenant, session_id)
+                            tenant, session_id, settings)
 
     def resume(self, session_id: str, *, tenant: str = "local") -> dict:
         """从最近的检查点续跑。已抓取的证据直接复用，只补没做完的部分。"""
@@ -233,13 +251,15 @@ class AgentRunner:
                         session_id=session_id, start=entry, resume_state=state)
 
     # ------------------------------------------------------------------ 依赖装配
-    def _build_runtime(self, llm: Any, tracer: Tracer, budget: Budget) -> Runtime:
+    def _build_runtime(self, llm: Any, tracer: Tracer, budget: Budget,
+                       settings: Settings | None = None) -> Runtime:
+        settings = settings or self.settings
         registry = ToolRegistry()
         build_github_tools(registry, self._github_client())
         runtime = Runtime(
-            settings=self.settings, llm=llm, registry=registry, memory=self.memory,
+            settings=settings, llm=llm, registry=registry, memory=self.memory,
             tracer=tracer, budget=budget, policy=ToolPolicy(),
-            index=HybridIndex(embedder=HashingEmbedder(self.settings.embedding_dim)),
+            index=HybridIndex(embedder=HashingEmbedder(settings.embedding_dim)),
         )
         build_kb_tools(registry, runtime)
         return runtime
@@ -247,7 +267,8 @@ class AgentRunner:
     # ------------------------------------------------------------------ 结果
     def _result(self, state: AgentState, tracer: Tracer, budget: Budget,
                 started: float, repo: str, issue_number: int, tenant: str,
-                session_id: str) -> dict:
+                session_id: str, settings: Settings | None = None) -> dict:
+        settings = settings or self.settings
         status = state.get("status", "succeeded")
         report = state.get("report") or ""
         if not report:
@@ -259,6 +280,8 @@ class AgentRunner:
         metrics = {
             **budget.snapshot(),
             **(state.get("metrics") or {}),
+            "provider": settings.llm_provider,
+            "model": settings.llm_model,
             "trace": tracer.summary(),
             "duration_ms": int((time.monotonic() - started) * 1000),
         }
@@ -321,7 +344,8 @@ class AgentRunner:
 
     # ------------------------------------------------------------------ 流式
     def stream(self, repo: str, issue_number: int, *, user_context: str = "",
-               tenant: str = "local", session_id: str | None = None) -> Iterator[dict]:
+               tenant: str = "local", session_id: str | None = None,
+               llm_override: dict | None = None) -> Iterator[dict]:
         """边执行边产出 trace 事件；最后一个事件是 ``final``（完整结果）。"""
         events: queue.Queue = queue.Queue()
         holder: dict[str, Any] = {}
@@ -332,7 +356,8 @@ class AgentRunner:
         def work() -> None:
             try:
                 holder["result"] = self.run(repo, issue_number, user_context=user_context,
-                                           tenant=tenant, session_id=session_id, sink=sink)
+                                           tenant=tenant, session_id=session_id, sink=sink,
+                                           llm_override=llm_override)
             except Exception as exc:  # noqa: BLE001
                 holder["error"] = exc
             finally:
