@@ -80,7 +80,7 @@ SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。无需 Docker、Redis
 
 ---
 
-## 3. 技术栈落点（简历/面试可直接对照代码）
+## 3. 技术栈落点（对照代码）
 
 | 能力 | 本项目实现 | 代码位置 |
 |---|---|---|
@@ -277,7 +277,7 @@ python -m issue_agent.eval.runner --offline
 - **失败体验** → 任何节点异常都落到 `degrade`，返回可读报告而不是 500。
 - **成本不可见** → 每次运行记录 Token/成本/工具调用/耗时，`/metrics` 可抓取。
 - **公网流量** → 结果缓存 + single-flight 合并并发 + 作业去重 + 限流 + 六维预算；
-  容量估算与扩容顺序见 [docs/LIFECYCLE.md](docs/LIFECYCLE.md) 阶段 6。
+  容量估算与扩容顺序见 [docs/PRODUCTION.md](docs/PRODUCTION.md) 第 8 节。
 - **重复问题复用** → 缓存键含租户/模型/Prompt 指纹，只缓存成功结果；命中返回 `cache.age_seconds`。
 - **RAG 召回失败** → GitHub 搜索为空时用错误码/异常名回退检索（不花 LLM 调用），
   仍为空则换词重检索或明确写"证据不足"，绝不编造。
@@ -313,7 +313,7 @@ issue_agent/
   obs/          tracing.py metrics.py logs.py
   cli.py index.html
 tests/          test_foundation.py test_agent.py test_api.py test_eval.py
-docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md SECURITY.md RESUME.md
+docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md PROVIDERS.md SECURITY.md IMAGES.md
 ```
 
 ---
@@ -337,13 +337,11 @@ docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md SECURITY.md RESUME.m
 | 文档 | 内容 |
 |---|---|
 | [docs/PROVIDERS.md](docs/PROVIDERS.md) | **12 家大模型的接入与 Key 申请**、GitHub Token 申请、兼容性矩阵、报错排查 |
-| [docs/IMAGES.md](docs/IMAGES.md) | **配图绘制提示词**（架构图 / Social Preview / UI 概念图 / Logo）+ 可渲染 Mermaid |
+| [docs/IMAGES.md](docs/IMAGES.md) | 图片素材清单、设计规范与重绘提示词 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 状态机、工具协议、检索/记忆/上下文设计、并发模型、关键取舍 |
 | [docs/PRODUCTION.md](docs/PRODUCTION.md) | **真实业务落地问题清单与解法**、容量估算、SLO、上线检查表 |
-| [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | **按实现阶段**梳理问题：公网流量、重复请求复用、RAG 召回失败、运营迭代 |
 | [docs/EVALUATION.md](docs/EVALUATION.md) | 指标定义、标注流程、实验对比方法、回归门禁 |
 | [docs/SECURITY.md](docs/SECURITY.md) | 威胁模型（提示注入/越权/数据外泄）、缓解措施与残余风险 |
-| [docs/RESUME.md](docs/RESUME.md) | 简历写法、STAR 故事、可验证指标、面试问答、诚实边界 |
 
 ---
 
