@@ -4,12 +4,10 @@ README 使用的图片都在 `docs/assets/`，已针对 GitHub 渲染做过尺�
 
 | 文件 | 用途 | 尺寸 |
 |---|---|---|
-| `architecture.svg` | 架构图（**推荐**，文字精确、可编辑） | 1600×900 |
-| `architecture.png` | 架构图（AI 生成版本，备用） | 1920×1080 |
+| `architecture.svg` | 架构图（文字精确、可编辑） | 1600×900 |
 | `social-preview.png` | README 顶部横幅 / GitHub Social Preview | 1280×640 |
 | `ui-preview.png` | 前端界面示意 | 1600×800 |
-| `logo.png` / `logo-256.png` | Logo | 1024 / 256 |
-| `favicon.ico` | 页面 favicon | 16–64 |
+| `logo-256.png` | Logo | 256 |
 
 ## 设计规范
 
