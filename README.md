@@ -1,79 +1,88 @@
+<p align="center"><b>English</b> · <a href="README.zh-CN.md">简体中文</a></p>
+
 <p align="center">
   <img src="docs/assets/logo-256.png" width="96" alt="Issue Triage Agent logo">
 </p>
 
-<h1 align="center">GitHub Issue 排障 Agent（端到端 Agentic RAG 项目）</h1>
+<h1 align="center">GitHub Issue Triage Agent (end-to-end Agentic RAG)</h1>
 
 <p align="center">
   <img src="docs/assets/social-preview.png" width="880" alt="Issue Triage Agent">
 </p>
 
-> 输入一个 `owner/repo` + Issue 编号，Agent 自主读 Issue、规划检索、调用只读工具收集证据、
-> 自我评估证据是否够用、写出带原始链接的排障假设，并在发布前用"审查员"剔除无依据结论。
-> **只读**：不运行目标仓库代码、不修改 Issue/PR、不声称已修复。
+> Give it an `owner/repo` and an issue number. The agent reads the issue, plans retrieval,
+> calls read-only tools to collect evidence, judges whether the evidence is sufficient, and
+> writes triage hypotheses with original source links. A critic pass removes unsupported
+> claims before the report is published.
+> **Read-only**: it does not run the target repository, does not modify issues or PRs, and
+> never claims a fix.
 
-技术栈：**Python 3.10+ / FastAPI / LangGraph / 多供应商 LLM（DeepSeek、OpenAI、Claude、
-通义千问、Moonshot、智谱、Gemini、本地 Ollama/vLLM 等）/ GitHub REST API /
-SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。单机运行不需要 Docker、Redis、
-向量数据库或 GPU；Docker 配置仅作可选部署方式。
-
----
-
-## 1. 业务问题与闭环
-
-工程师排查线上报错时，真实动作是：读报错 Issue → 翻评论里的 workaround → 搜历史同类 Issue →
-确认版本差异 → 形成假设 → 验证。这条链路的信息散落在 GitHub 的正文、评论、README、历史 Issue、
-已合并 PR 中，人工做一次通常 20~60 分钟。
-
-本项目把这条链路做成一个有边界的 Agent：
-
-```
-目标 Issue ──┬─ 评论（首尾抽样）──┐
-             ├─ README ──────────┤
-             └─ 历史 Issue/PR ───┘
-                     │
-               混合检索（BM25 + 向量 + RRF）
-                     │
-  规划 → 工具选择 → 证据评估 ─┬─ 不够 → 再检索（有上限）
-                              └─ 够 → 写作 → 依据性审查 ─┬─ 不过 → 重写一次
-                                                          └─ 通过 → 带引用报告
-```
-
-产物：结论摘要、分级置信度的可能原因、**每条结论的证据链接**、建议排查步骤、验证方式、
-缺失信息清单、完整执行轨迹与成本指标。
+Stack: **Python 3.10+ / FastAPI / LangGraph / multi-provider LLM (DeepSeek, OpenAI, Claude,
+Qwen, Moonshot, Zhipu, Gemini, local Ollama/vLLM, and any OpenAI-compatible endpoint) /
+GitHub REST API / SQLite (cache, memory, checkpoints) / plain HTML + SSE**.
+A single machine does not need Docker, Redis, a vector database, or a GPU; the Docker setup
+is only an optional deployment path.
 
 ---
 
-## 2. 架构
+## 1. Problem and closed loop
+
+When engineers debug a production error, the real workflow is: read the issue, scan comments
+for workarounds, search for similar historical issues, compare versions, form a hypothesis,
+then verify it. That information is scattered across issue bodies, comments, READMEs,
+historical issues, and merged PRs. Doing it by hand usually takes 20-60 minutes.
+
+This project turns that workflow into a bounded agent:
+
+```
+Target issue ──┬─ comments (head/tail sample) ─┐
+               ├─ README ──────────────────────┤
+               └─ historical issues / PRs ─────┘
+                        │
+               hybrid retrieval (BM25 + vector + RRF)
+                        │
+  plan → tool calls → evidence assessment ─┬─ not enough → retrieve again (bounded)
+                                            └─ enough → write → groundedness review
+                                                          ├─ fail → rewrite once
+                                                          └─ pass → cited report
+```
+
+Output: a summary, ranked hypotheses with confidence, **a source link for every claim**,
+suggested investigation steps, verification steps, a list of missing information, the full
+execution trace, and cost metrics.
+
+---
+
+## 2. Architecture
 
 ![Architecture](docs/assets/architecture.svg)
 
 <details>
-<summary>同等内容的 ASCII 版本（便于纯文本环境阅读）</summary>
+<summary>ASCII version (for plain-text environments)</summary>
 
 ```
 ┌────────────────────────────── Web UI (index.html, SSE) ──────────────────────────────┐
-│ 表单 → POST /api/v1/jobs → GET /api/v1/jobs/{id}/events（流式 trace）→ 报告 + 反馈     │
+│ form → POST /api/v1/jobs → GET /api/v1/jobs/{id}/events (live trace) → report + feedback
 └───────────────────────────────────────┬──────────────────────────────────────────────┘
                                         │
-┌─────────────────────────────── FastAPI 层 ───────────────────────────────────────────┐
-│ API Key 鉴权 / 租户隔离 / 滑动窗口限流 / 请求 ID / 统一错误码 / /metrics / /readyz      │
+┌─────────────────────────────── FastAPI layer ────────────────────────────────────────┐
+│ API-key auth / tenant isolation / sliding-window rate limit / request ID / error codes
 └───────────────────────────────────────┬──────────────────────────────────────────────┘
                                         │
-┌────────────────────────────── Agent 编排（LangGraph）────────────────────────────────┐
+┌────────────────────────────── Agent orchestration (LangGraph) ────────────────────────┐
 │ ingest → plan → act ⇄ assess → compose ⇄ verify → finalize                            │
-│                     ↘ 预算耗尽 / 节点异常 → degrade（仍然给出可读结果）                 │
-│ 预算守卫 · 循环守卫 · 引用白名单 · 越界表述拦截 · 检查点续跑                            │
+│                     ↘ budget exhausted / node error → degrade (still returns a report)│
+│ budget guards · loop guards · citation whitelist · unsafe-claim filter · checkpoints  │
 └──────┬──────────────────┬──────────────────┬──────────────────┬──────────────────────┘
        │                  │                  │                  │
 ┌──────▼──────┐  ┌────────▼────────┐  ┌──────▼───────┐  ┌───────▼────────┐
-│ 工具注册表   │  │ 混合检索 RAG    │  │ 长期记忆      │  │ 可观测性        │
-│ 参数 Schema  │  │ chunk/BM25/向量 │  │ episode/fact │  │ span/metrics   │
-│ 超时/去重/截断│  │ RRF/重排/去重   │  │ checkpoint   │  │ 结构化日志      │
+│ Tool registry│  │ Hybrid RAG      │  │ Long-term    │  │ Observability  │
+│ JSON schema  │  │ chunk/BM25/vec  │  │ memory       │  │ spans/metrics  │
+│ timeout/dedup│  │ RRF / rerank    │  │ checkpoint   │  │ structured logs│
 └──────┬──────┘  └─────────────────┘  └──────────────┘  └────────────────┘
        │
 ┌──────▼──────────────────────────────────────────────────────────────────────────────┐
-│ GitHub 只读客户端：ETag 条件请求 · TTL 缓存 · 分页 · 退避重试 · 限流识别 · 出口白名单  │
+│ GitHub read-only client: ETag requests · TTL cache · pagination · backoff · egress   │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,30 +90,30 @@ SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。单机运行不需要
 
 ---
 
-## 3. 技术栈落点（对照代码）
+## 3. Technology map (code-level)
 
-| 能力 | 本项目实现 | 代码位置 |
+| Capability | Implementation | Where |
 |---|---|---|
-| Agent Loop / ReAct | 单步工具决策 + 观测回填 + 有界循环 | `issue_agent/agent/nodes.py` |
-| Graph Engineering | LangGraph `StateGraph` + 条件路由 + 单一失败出口 | `issue_agent/agent/graph.py` |
-| 结构化输出 | Pydantic 契约 + JSON 解析 + 带错误的修复重试 | `issue_agent/llm/client.py` `llm/schemas.py` |
-| Tool Use / Function Calling | 工具注册表、JSON Schema 校验、`json`/`native` 双协议 | `issue_agent/tools/` |
-| Agentic RAG | 模型自主决定何时检索、检索几次、换什么词 | `agent/nodes.py` `tools/kb_tools.py` |
-| Hybrid Retrieval | 标题感知切块 + BM25 + 哈希向量 + RRF + 文档级去重 | `issue_agent/rag/` |
-| Memory | 工作记忆/情景记忆/语义事实/检查点/反馈 四层 | `issue_agent/memory/store.py` |
-| Context Engineering | 证据 ID/URL 注入、字符预算、不可信内容 nonce 隔离 | `issue_agent/agent/context.py` |
-| Guardrails | 注入检测、密钥脱敏、引用白名单、越界表述改写、只读策略 | `issue_agent/security/` |
-| 预算与降级 | Token/成本/调用数/轮次/墙钟六维预算，超限降级不崩溃 | `issue_agent/budget.py` |
-| 可观测性 | Span 树、Prometheus 指标、JSON 日志、trace JSONL | `issue_agent/obs/` |
-| 评测 | 离线数据集、Recall@k/MRR/引用有效率、回归门禁 | `issue_agent/eval/` |
-| 服务化 | FastAPI + 异步作业 + SSE 断线重放 + 鉴权限流 | `issue_agent/api/` |
-| 容错 | 条件请求缓存、指数退避、超时、幂等去重、检查点续跑 | `tools/github_tools.py` `cache.py` |
+| Agent loop / ReAct | one tool per step, observations fed back, bounded loop | `issue_agent/agent/nodes.py` |
+| Graph engineering | LangGraph `StateGraph`, conditional routing, single failure exit | `issue_agent/agent/graph.py` |
+| Structured output | Pydantic contracts, JSON parsing, repair retry with validation errors | `issue_agent/llm/client.py`, `llm/schemas.py` |
+| Tool use / function calling | tool registry, JSON Schema validation, `json`/`native` protocols | `issue_agent/tools/` |
+| Agentic RAG | model decides when, how often, and what to retrieve | `agent/nodes.py`, `tools/kb_tools.py` |
+| Hybrid retrieval | heading-aware chunking, BM25, hashed vectors, RRF, doc-level dedupe | `issue_agent/rag/` |
+| Memory | working, episodic, semantic facts, checkpoints, feedback | `issue_agent/memory/store.py` |
+| Context engineering | evidence IDs/URLs, character budget, nonce-isolated untrusted text | `issue_agent/agent/context.py` |
+| Guardrails | injection detection, secret redaction, citation whitelist, read-only policy | `issue_agent/security/` |
+| Budgets & degradation | six-dimensional budget, deterministic degraded report on exhaustion | `issue_agent/budget.py` |
+| Observability | span tree, Prometheus metrics, JSON logs, trace JSONL | `issue_agent/obs/` |
+| Evaluation | offline dataset, Recall@k/MRR/citation validity, regression gate | `issue_agent/eval/` |
+| Serving | FastAPI, async jobs, SSE replay, auth and rate limiting | `issue_agent/api/` |
+| Resilience | conditional-request cache, exponential backoff, timeouts, dedupe, resume | `tools/github_tools.py`, `cache.py` |
 
 ---
 
-## 4. 快速开始
+## 4. Quick start
 
-### 通用（Python >= 3.10）
+### Requirements (Python >= 3.10)
 
 ```bash
 python -m venv .venv
@@ -113,29 +122,31 @@ python -m pip install -r requirements.txt
 python -m issue_agent.cli serve --host 127.0.0.1 --port 8000
 ```
 
-打开 <http://127.0.0.1:8000>，在页面上填写**模型 Key** 与 **GitHub Token** 即可开始，
-不需要改代码或 `.env`。示例仓库 `idosal/git-mcp` / `214`（公开 Issue，随时可能变化）。
+Open <http://127.0.0.1:8000>, enter a **model API key** and a **GitHub token** in the page,
+and run an analysis. No source edits or `.env` are required.
+Example: `idosal/git-mcp` / `214` (public issue; content may change over time).
 
-> `cp .env.example .env` 是可选的：只有希望给服务端设置默认凭据（多人共用、或让访客不填也能用）时才需要。
-> 用 conda 也可以：`conda create -n issue-agent python=3.11 && conda activate issue-agent`。
+> `cp .env.example .env` is optional. It only sets server-side defaults (for shared
+> deployments, or when visitors should not need their own keys).
+> Conda also works: `conda create -n issue-agent python=3.11 && conda activate issue-agent`.
 
-### 4.1 选择大模型（前端下拉，12 个预设）
+### 4.1 Choose a model (12 presets in the UI)
 
-支持 DeepSeek、OpenAI、Anthropic Claude、通义千问、Moonshot、智谱 GLM、SiliconFlow、
-OpenRouter、Gemini、本地 Ollama / vLLM，以及任意 OpenAI 兼容的自建端点。
+Supported: DeepSeek, OpenAI, Anthropic Claude, Qwen (DashScope), Moonshot, Zhipu GLM,
+SiliconFlow, OpenRouter, Gemini, local Ollama/vLLM, and any OpenAI-compatible endpoint.
 
-在页面「大模型供应商」中选择，填入该厂商的 Key 即可；不选则用服务端默认配置。
+Pick a provider in the page and paste its key; leave it empty to use the server default.
 
-| Provider | 协议 | 示例模型 | Key 变量 |
+| Provider | Protocol | Example model | Key variable |
 |---|---|---|---|
-| `deepseek`（默认） | OpenAI 兼容 | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| `deepseek` (default) | OpenAI-compatible | `deepseek-flash` | `DEEPSEEK_API_KEY` |
 | `openai` | OpenAI | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | `anthropic` | Messages API | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
-| `qwen` | OpenAI 兼容 | `qwen-plus` | `DASHSCOPE_API_KEY` |
-| `moonshot` | OpenAI 兼容 | `moonshot-v1-8k` | `MOONSHOT_API_KEY` |
-| `ollama` | OpenAI 兼容 | `qwen2.5:7b` | 无需 |
+| `qwen` | OpenAI-compatible | `qwen-plus` | `DASHSCOPE_API_KEY` |
+| `moonshot` | OpenAI-compatible | `moonshot-v1-8k` | `MOONSHOT_API_KEY` |
+| `ollama` | OpenAI-compatible | `qwen2.5:7b` | not required |
 
-服务端默认值（可选，写进 `.env`）：
+Optional server defaults (`.env`):
 
 ```ini
 LLM_PROVIDER=openai
@@ -143,40 +154,44 @@ OPENAI_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 ```
 
-完整的 Key 申请步骤、兼容性矩阵（JSON mode / tool calling / thinking）、
-常见报错排查见 **[docs/PROVIDERS.md](docs/PROVIDERS.md)**。
+Key acquisition steps, the compatibility matrix (JSON mode / tool calling / thinking), and
+troubleshooting are in **[docs/PROVIDERS.md](docs/PROVIDERS.md)** (Chinese).
 
-### 4.2 填写 GitHub Token（前端填写，可选）
+### 4.2 GitHub token (optional, entered in the UI)
 
-不填也能跑，但匿名只有 **60 次/小时**；填了 Token 后是 **5,000 次/小时**，
-并且可以读取你有权限的私有仓库。
+Without a token you get **60 requests/hour**. With a token you get **5,000 requests/hour**
+and can read private repositories you have access to.
 
-1. GitHub → 右上头像 → **Settings** → **Developer settings**；
-2. **Personal access tokens → Fine-grained tokens → Generate new token**；
-3. Repository access 选 **Public repositories (read-only)**（或指定仓库）；
-4. Permissions 只给：**Issues: Read-only**、**Contents: Read-only**、**Metadata: Read-only**
-   （可选 **Pull requests: Read-only**）；
-5. 生成后把 `github_pat_...` 粘贴到页面的 **GitHub Token** 输入框。
+1. GitHub → avatar → **Settings** → **Developer settings**.
+2. **Personal access tokens → Fine-grained tokens → Generate new token**.
+3. Repository access: **Public repositories (read-only)**, or select specific repos.
+4. Permissions: **Issues: Read-only**, **Contents: Read-only**, **Metadata: Read-only**
+   (optionally **Pull requests: Read-only**).
+5. Paste `github_pat_...` into the **GitHub Token** field in the page.
 
-报告顶部的指标会显示本次是「我的 Token / 服务器 Token / 匿名」。
+The report metrics show whether the run used *your token*, the *server token*, or *anonymous*
+access.
 
-> Token 只显示一次，请立刻保存；不要提交到 Git。详细步骤（含 classic token 方案与安全建议）
-> 见 [docs/PROVIDERS.md#4-github-token-申请步骤重要](docs/PROVIDERS.md#4-github-token-申请步骤重要)。
+> The token is shown only once. Do not commit it. Detailed steps (including classic tokens
+> and security notes) are in
+> [docs/PROVIDERS.md#4-github-token-申请步骤重要](docs/PROVIDERS.md#4-github-token-申请步骤重要) (Chinese).
 
-### 4.3 自带凭据（BYOK）
+### 4.3 Bring your own credentials (BYOK)
 
 ![UI preview](docs/assets/ui-preview.png)
 
-<sub>界面示意图：左栏选择供应商并填写模型 Key 与 GitHub Token，中栏实时执行轨迹，右栏带引用的报告。</sub>
+<sub>UI mock: provider selection plus model key and GitHub token on the left, live trace in
+the middle, cited report on the right.</sub>
 
-页面上的两个凭据都只用于当次分析，**不落盘、不进日志、不进 trace**：
+Both credentials are used only for the current analysis. They are **not persisted, not
+logged, and not written to traces**:
 
-1. **大模型供应商**：选择厂商（留空用服务器默认）；
-2. **模型 API Key**：填该厂商的 Key；
-3. **GitHub Token**：可选，提高额度或访问私有仓库；
-4. **高级 → 模型名**：可选，留空用该供应商默认模型。
+1. **Provider**: choose a vendor (empty = server default).
+2. **Model API key**: the key for that vendor.
+3. **GitHub token**: optional; raises limits or grants access to private repos.
+4. **Advanced → model name**: optional; empty uses the provider default.
 
-对应的 API 请求：
+Equivalent API request:
 
 ```json
 POST /api/v1/analyze
@@ -188,188 +203,224 @@ POST /api/v1/analyze
 }
 ```
 
-安全约束：
-- **不允许前端指定 base_url**（避免服务端被当成 SSRF 跳板），自建网关请用服务端 `LLM_BASE_URL`；
-- 两个凭据都只存在于该次运行的内存对象里，不写数据库、不写结果缓存、不写 trace；
-- 结果缓存按「模型 + GitHub 凭据范围」隔离，不同 Token 不会互相复用结果；
-- GitHub HTTP 缓存也按 Token 作用域隔离，避免用 A 的权限缓存出 B 能看到的内容；
-- 选择其他供应商但没填 Key 时返回 **400** 并提示，而不是 500；
-- 服务端限流仍然生效，防止 BYOK 被用来刷服务器资源。
+Security constraints:
 
----
+- **The client cannot set `base_url`** (prevents SSRF); self-hosted gateways must be configured
+  server-side via `LLM_BASE_URL`.
+- Both credentials live only in memory for that run; they are never written to the database,
+  the result cache, or the trace.
+- Result-cache keys include the model and the GitHub-credential scope, so different tokens
+  never share results.
+- GitHub HTTP cache entries are scoped by token as well, so permission A's cached responses
+  cannot leak to permission B.
+- Selecting another provider without a key returns **400**, not 500.
+- Server-side rate limits still apply; BYOK cannot be used to bypass them.
 
-### Docker（可选）
+### Docker (optional)
 
 ```bash
-docker compose up --build      # 只监听 127.0.0.1:8000
+docker compose up --build      # binds 127.0.0.1:8000 only
 ```
 
-### 命令行
+### CLI
 
 ```bash
 python -m issue_agent.cli analyze --repo idosal/git-mcp --issue 214 --stream --out report.md
-python -m issue_agent.cli eval --offline          # 离线评测（无需 Key/网络）
-python -m issue_agent.cli doctor                  # 环境自检
+python -m issue_agent.cli eval --offline          # offline eval (no key or network needed)
+python -m issue_agent.cli doctor                  # environment self-check
 ```
 
 ---
 
 ## 5. HTTP API
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Description |
 |---|---|---|
-| POST | `/api/v1/analyze` | 同步分析，返回完整结果 |
-| POST | `/api/v1/jobs` | 创建异步作业，返回 `job_id` |
-| GET | `/api/v1/jobs/{id}` | 作业状态与结果 |
-| GET | `/api/v1/jobs/{id}/events` | SSE 事件流（`Last-Event-ID` 可续传） |
-| GET | `/api/v1/sessions` `/api/v1/sessions/{id}` | 历史会话（租户隔离） |
-| POST | `/api/v1/sessions/{id}/resume` | 从检查点续跑 |
-| POST | `/api/v1/feedback` | 👍/👎 + 评论，进入评测候选集 |
-| GET | `/api/v1/meta` `/api/v1/stats` `/api/v1/eval/latest` | 配置/统计/最近评测 |
-| GET | `/healthz` `/readyz` `/metrics` | 探针与 Prometheus 指标 |
+| POST | `/api/v1/analyze` | synchronous analysis, full result |
+| POST | `/api/v1/jobs` | create an async job, returns `job_id` |
+| GET | `/api/v1/jobs/{id}` | job status and result |
+| GET | `/api/v1/jobs/{id}/events` | SSE stream (`Last-Event-ID` replay supported) |
+| GET | `/api/v1/sessions`, `/api/v1/sessions/{id}` | session history (tenant-scoped) |
+| POST | `/api/v1/sessions/{id}/resume` | resume from a checkpoint |
+| POST | `/api/v1/feedback` | 👍/👎 plus a comment, feeds the eval candidate pool |
+| GET | `/api/v1/meta`, `/api/v1/stats`, `/api/v1/eval/latest` | config, stats, latest eval |
+| GET | `/healthz`, `/readyz`, `/metrics` | probes and Prometheus metrics |
 
-鉴权：配置 `API_KEYS="key:tenant,key2:tenant2"` 后必须带 `X-API-Key`；未配置时仅允许本机访问。
-错误统一为 `{"error":{"code","message","retryable"},"request_id"}`。
+Authentication: with `API_KEYS="key:tenant,key2:tenant2"`, every `/api/v1/*` call must send
+`X-API-Key`. Without keys, only loopback clients are allowed.
+Errors use `{"error":{"code","message","retryable"},"request_id"}`.
 
-`/api/v1/analyze` 与 `/api/v1/jobs` 支持可选的 `llm` 与 `github` 字段，用于传入用户自己的
-模型 Key 与 GitHub Token（见 4.3）；不传则使用服务端默认配置。
+`/api/v1/analyze` and `/api/v1/jobs` accept optional `llm` and `github` fields for user-provided
+credentials (see 4.3); omitting them uses server defaults.
 
-**重复请求复用**：同一 `(租户, 仓库, Issue, 补充信息, 模型, Prompt 版本, GitHub 凭据范围)` 在
-`RESULT_CACHE_TTL_S`（默认 900s）内直接返回缓存结果，并带 `cache.age_seconds`；
-缓存未写入时的并发相同请求由 single-flight 合并为一次执行；运行中的异步作业按同一 key 去重。
+**Request reuse**: identical `(tenant, repo, issue, user context, model, prompt version,
+GitHub credential scope)` requests return the cached result within `RESULT_CACHE_TTL_S`
+(default 900s) and include `cache.age_seconds`. Concurrent identical requests before the cache
+is written are collapsed by single-flight; running jobs are deduplicated by the same key.
 
 ---
 
-## 6. 评测（可复现的数字）
+## 6. Evaluation (reproducible numbers)
 
 ```bash
 python -m issue_agent.eval.runner --offline
 ```
 
-当前离线结果（4 个**合成**样本、确定性 LLM 替身，验证的是流水线而非模型能力）：
+Current offline results (4 **synthetic** cases with a deterministic LLM stand-in; this
+validates the pipeline, not model quality):
 
-| 指标 | 数值 | 含义 |
+| Metric | Value | Meaning |
 |---|---|---|
-| Recall@5 | 0.833 | 标注的相关历史 Issue 进入前 5 的比例 |
-| MRR | 1.000 | 第一个相关结果的排名倒数 |
-| 引用有效率 | 1.000 | 引用 ID 必须真实存在（幻觉引用 = 0） |
-| 引用覆盖率 | 1.000 | 有证据支撑的假设比例 |
-| P50 / P95 延迟 | ≈1.0s / 1.2s | 含本地 SQLite 开销，不含真实模型推理 |
-| 测试 | 99 个离线用例 | `python -m unittest discover -s tests -t .` |
+| Recall@5 | 0.833 | share of labeled related issues in the top 5 |
+| MRR | 1.000 | reciprocal rank of the first relevant result |
+| Citation validity | 1.000 | cited IDs must exist (zero hallucinated citations) |
+| Citation coverage | 1.000 | share of hypotheses with at least one citation |
+| P50 / P95 latency | ~1.0s / 1.2s | includes local SQLite overhead, excludes real model inference |
+| Tests | 103 offline cases | `python -m unittest discover -s tests -t .` |
 
-真实链路冒烟（`idosal/git-mcp#214`，真实 GitHub + DeepSeek）：一次成功运行 **53s / 29.4k token /
-14 次 LLM 调用 / 8 次工具调用 / 2 轮检索**，期间自动触发一次依据性重写。
-完整报告见 [examples/sample-report.md](examples/sample-report.md)。
+Live smoke test (`idosal/git-mcp#214`, real GitHub + DeepSeek): one successful run used
+**53s / 29.4k tokens / 14 LLM calls / 8 tool calls / 2 retrieval rounds** and triggered one
+groundedness rewrite. See [examples/sample-report.md](examples/sample-report.md).
 
-> 这组数字**不能**当作产品效果对外宣称。真实效果必须用 `--live` 在公开 Issue 上跑，
-> 标注流程与门禁见 [docs/EVALUATION.md](docs/EVALUATION.md)。
-
----
-
-## 7. 真实业务落地问题（摘要）
-
-完整清单（30+ 条，含根因、解法、代码位置、仍然存在的风险）见
-**[docs/PRODUCTION.md](docs/PRODUCTION.md)**。摘要：
-
-- **GitHub 限流与网络抖动** → 条件请求 + ETag 304 + TTL 缓存 + 抖动退避 + 限流识别（不做无意义重试）。
-- **长评论线程** → 分页上限 + 首尾抽样（开头复现步骤、结尾结论），并显式告知"中间被跳过"。
-- **模型 JSON 不稳定** → `response_format=json_object` + 截断检测 + 带校验错误的修复重试 + 明确失败。
-- **幻觉引用** → 证据 ID 白名单，未知 ID 直接丢弃并计入指标；证据 URL 只允许 GitHub 域名。
-- **提示注入**（Issue 里写"忽略之前指令"） → 不可信内容 nonce 边界 + 注入打分 + 降权 + 只读工具白名单 + 强制同仓库。
-- **Agent 死循环** → 六维预算（步数/轮次/工具/LLM/Token/金额/墙钟）+ 同参去重 + 重复检索即停。
-- **上下文膨胀** → 目标 Issue 优先、按证据截断、字符预算（已知简化：非 tokenizer 预算）。
-- **过度自信** → 置信度分级 + "待验证假设"措辞 + 越界表述检测与改写 + 免责声明。
-- **失败体验** → 任何节点异常都落到 `degrade`，返回可读报告而不是 500。
-- **成本不可见** → 每次运行记录 Token/成本/工具调用/耗时，`/metrics` 可抓取。
-- **公网流量** → 结果缓存 + single-flight 合并并发 + 作业去重 + 限流 + 六维预算；
-  容量估算与扩容顺序见 [docs/PRODUCTION.md](docs/PRODUCTION.md) 第 8 节。
-- **重复问题复用** → 缓存键含租户/模型/Prompt 指纹，只缓存成功结果；命中返回 `cache.age_seconds`。
-- **RAG 召回失败** → GitHub 搜索为空时用错误码/异常名回退检索（不花 LLM 调用），
-  仍为空则换词重检索或明确写"证据不足"，绝不编造。
-- **多实例** → 当前限流/作业/缓存是单机实现，多实例需换 Redis，文档里明确标注而非假装解决。
+> These numbers must **not** be presented as product quality. Real quality requires `--live`
+> runs on public issues; the labeling workflow and gates are in
+> [docs/EVALUATION.md](docs/EVALUATION.md) (Chinese).
 
 ---
 
-## 8. 安全边界
+## 7. Production problems (summary)
 
-1. **只读**：工具白名单只有 8 个只读接口；写操作（评论/关 Issue/提 PR）在策略层直接拒绝。
-2. **出口固定**：HTTP 客户端 base_url 写死 `https://api.github.com`，不做任意 URL 抓取（SSRF 防护）。
-3. **数据即数据**：仓库内容一律包裹在每次运行随机 nonce 的边界标记内，模型被要求忽略其中指令；
-   结构化引用校验兜底，不依赖模型"自觉"。
-4. **脱敏**：日志/trace/错误返回对 Key、Token、私钥、JWT、邮箱做脱敏（`security/guard.py`）。
-5. **租户隔离**：所有记忆查询在 SQL 层强制带 `tenant`。
-6. **生产 fail-fast**：`ISSUE_AGENT_ENV=prod` 时缺 API Key/缺 CORS/无限流直接拒绝启动。
+The full list (50+ items with root cause, fix, code location, and residual risk) is in
+**[docs/PRODUCTION.md](docs/PRODUCTION.md)** (Chinese). Highlights:
+
+- **GitHub rate limits and flaky networks** → conditional requests + ETag 304 + TTL cache +
+  jittered backoff + limit detection (no pointless retries).
+- **Huge comment threads** → pagination caps + head/tail sampling (repro steps at the start,
+  conclusions at the end) with an explicit "middle skipped" warning.
+- **Unstable model JSON** → `response_format=json_object`, truncation detection, repair retry
+  with validation errors, and a hard failure instead of silent success.
+- **Hallucinated citations** → evidence-ID whitelist; unknown IDs are dropped and counted;
+  evidence URLs are restricted to GitHub domains.
+- **Prompt injection** ("ignore previous instructions" inside an issue) → nonce delimiters
+  around untrusted text, injection scoring, down-ranking, read-only tool whitelist, and
+  forced same-repo scope.
+- **Runaway agent loops** → six-dimensional budget (steps, rounds, tools, LLM calls, tokens,
+  cost, wall clock) + same-argument dedupe + stop on repeated retrieval.
+- **Context bloat** → target issue first, per-evidence truncation, character budget
+  (known simplification: not tokenizer-based).
+- **Overconfidence** → confidence levels, "hypothesis, not confirmed root cause" wording,
+  unsafe-claim detection and rewriting, and a disclaimer.
+- **Bad failure UX** → every node failure falls through to `degrade`, returning a readable
+  report instead of a 500.
+- **Invisible cost** → every run records tokens, cost, tool calls, and latency; `/metrics`
+  is scrapeable.
+- **Public traffic** → result cache + single-flight + job dedupe + rate limits + six budgets;
+  capacity math is in section 8 of [docs/PRODUCTION.md](docs/PRODUCTION.md) (Chinese).
+- **Duplicate questions** → cache keys include tenant/model/prompt fingerprint; only successful
+  runs are cached; hits expose `cache.age_seconds`.
+- **RAG recall failures** → when GitHub search returns nothing, fall back to error-code /
+  exception-name search (no extra LLM call); if still empty, retry with new terms or state
+  "insufficient evidence" — never invent a cause.
+- **Multiple replicas** → rate limiting, jobs, and event buffers are single-process; production
+  needs Redis. This is documented, not hand-waved.
 
 ---
 
-## 9. 目录结构
+## 8. Security boundaries
+
+1. **Read-only**: the whitelist contains 8 read-only tools; write operations (comment, close,
+   create PR) are rejected in the policy layer.
+2. **Fixed egress**: the HTTP client is pinned to `https://api.github.com`; no arbitrary URL
+   fetching (SSRF protection).
+3. **Data is data**: repository content is wrapped in per-run random nonce delimiters and the
+   model is told to ignore instructions inside; structured citation checks are the backstop.
+4. **Redaction**: keys, tokens, private keys, JWTs, and emails are scrubbed from logs, traces,
+   and error responses (`security/guard.py`).
+5. **Tenant isolation**: every memory query enforces `tenant` at the SQL layer.
+6. **Production fail-fast**: `ISSUE_AGENT_ENV=prod` refuses to start without API keys, CORS
+   origins, and rate limiting.
+
+---
+
+## 9. Layout
 
 ```
 issue_agent/
   config.py budget.py cache.py errors.py testing.py
-  security/     guard.py policy.py            # 注入检测/脱敏/引用校验/只读策略
-  llm/          client.py schemas.py fake.py  # 结构化调用、契约、离线替身
+  security/     guard.py policy.py            # injection detection, redaction, citations, read-only policy
+  llm/          client.py schemas.py fake.py transport.py providers.py
   tools/        base.py github_tools.py kb_tools.py
-  rag/          chunk.py index.py             # 切块/BM25/哈希向量/RRF/重排
-  memory/       store.py                      # 会话/检查点/episode/fact/feedback
+  rag/          chunk.py index.py             # chunking, BM25, hashed vectors, RRF, rerank
+  memory/       store.py                      # sessions, checkpoints, episodes, facts, feedback
   agent/        state.py prompts.py context.py nodes.py graph.py report.py runner.py
   api/          app.py security.py jobs.py schemas.py
   eval/         dataset.py metrics.py runner.py
   obs/          tracing.py metrics.py logs.py
   cli.py index.html
-tests/          test_foundation.py test_agent.py test_api.py test_eval.py
+tests/          test_foundation.py test_agent.py test_api.py test_eval.py test_providers.py
 docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md PROVIDERS.md SECURITY.md IMAGES.md
 ```
 
 ---
 
-## 10. 已知限制
+## 10. Known limitations
 
-1. 检索语料规模小（单次运行 < 30 篇文档），不是仓库级长期索引；跨 Issue 的长期知识靠 episode 记忆，
-   不做全库 embedding。
-2. 默认向量是**确定性哈希向量**，抓不住真正的同义改写；生产应替换为 bge/text-embedding 模型。
-3. 上下文预算按字符而非 token 计算，中文长文本会低估 token 约 30%。
-4. 评论只取首尾，长线程中间的关键信息可能被跳过（报告里会提示）。
-5. 不做跨仓库检索；同一仓库内的历史 Issue 也可能命名不同、搜不到。
-6. 限流、作业队列、事件缓冲是单进程内存实现；多副本部署需 Redis。
-7. 不执行代码、不读完整代码库、不解析 PR diff，因此"是否已修复"只能给线索，不能给结论。
-8. 离线评测用合成数据 + 规则型 LLM 替身，结果只证明流水线正确，不证明模型效果。
+1. The retrieval corpus is small (fewer than 30 documents per run); it is not a repository-wide
+   long-term index. Cross-issue knowledge relies on episodic memory, not full-corpus embeddings.
+2. The default vectorizer is a **deterministic hashed vector**; it cannot capture true paraphrase.
+   Production should use bge/text-embedding models.
+3. The context budget is character-based, not tokenizer-based; long Chinese text underestimates
+   tokens by roughly 30%.
+4. Comments are sampled from the head and tail; information in the middle of long threads may be
+   skipped (the report says so).
+5. No cross-repository retrieval; related issues with very different wording may not be found.
+6. Rate limiting, the job queue, and the event buffer are single-process; multi-replica deployments
+   need Redis.
+7. The agent does not execute code, read the full repository, or parse PR diffs; "is it fixed?"
+   can only be a lead, not a conclusion.
+8. Offline evaluation uses synthetic data and a rule-based LLM stand-in; it validates the pipeline,
+   not model quality.
 
 ---
 
-## 11. 文档
+## 11. Documentation
 
-| 文档 | 内容 |
+Detailed docs are currently written in Chinese (the code and this README are English).
+
+| Document | Content |
 |---|---|
-| [docs/PROVIDERS.md](docs/PROVIDERS.md) | **12 家大模型的接入与 Key 申请**、GitHub Token 申请、兼容性矩阵、报错排查 |
-| [docs/IMAGES.md](docs/IMAGES.md) | 图片素材清单、设计规范与重绘提示词 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 状态机、工具协议、检索/记忆/上下文设计、并发模型、关键取舍 |
-| [docs/PRODUCTION.md](docs/PRODUCTION.md) | **真实业务落地问题清单与解法**、容量估算、SLO、上线检查表 |
-| [docs/EVALUATION.md](docs/EVALUATION.md) | 指标定义、标注流程、实验对比方法、回归门禁 |
-| [docs/SECURITY.md](docs/SECURITY.md) | 威胁模型（提示注入/越权/数据外泄）、缓解措施与残余风险 |
+| [docs/PROVIDERS.md](docs/PROVIDERS.md) | 12 providers, key acquisition, GitHub tokens, compatibility, troubleshooting |
+| [docs/IMAGES.md](docs/IMAGES.md) | image assets, design tokens, regeneration prompts |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | state machine, tool protocol, retrieval/memory/context design, tradeoffs |
+| [docs/PRODUCTION.md](docs/PRODUCTION.md) | production problem list, capacity planning, SLOs, launch checklist |
+| [docs/EVALUATION.md](docs/EVALUATION.md) | metric definitions, labeling workflow, experiments, regression gate |
+| [docs/SECURITY.md](docs/SECURITY.md) | threat model, mitigations, residual risks |
 
 ---
 
-## 12. 隐私与数据
+## 12. Privacy and data
 
-- **不收集遥测**：项目没有任何统计上报；只访问 GitHub 公开 API 与你配置的 LLM 端点。
-- **密钥只在本机**：`.env` 已被 `.gitignore` 排除；`.env.example` 只有占位符。
-  提交前可运行 `python scripts/preflight.py` 自检密钥、本机路径与个人邮箱。
-- **运行产物含真实内容**：`data/`（SQLite 会话、结果缓存、trace、报告）会记录你分析过的
-  Issue 文本与补充信息。**分享 trace / 数据库 / 截图前请先清理**，不要提交到仓库。
-- **第三方数据流**：分析内容（公开 GitHub 数据 + 你填写的补充信息，已脱敏）会发送到
-  LLM 供应商。处理敏感信息前请确认对方的数据条款，或用 `LLM_BASE_URL` 指向自建端点。
-- **示例报告为合成数据**：`examples/sample-report.md` 由 FakeGitHub + 规则型 LLM 生成，
-  不含任何真实用户、仓库或 Issue。
+- **No telemetry**: the project reports nothing; it only calls the GitHub API (public repos, or
+  private repos your token can access) and the LLM endpoint you configure.
+- **Keys stay local**: `.env` is gitignored; `.env.example` contains placeholders only. Run
+  `python scripts/preflight.py` before committing to scan for keys, local paths, and emails.
+- **Runtime artifacts contain real content**: `data/` (SQLite sessions, result cache, traces,
+  reports) records issue text and your context. **Clean it before sharing traces, databases, or
+  screenshots**, and never commit it.
+- **Third-party data flow**: analysis content (public GitHub data plus your sanitized context) is
+  sent to the LLM provider. Check their data terms before processing sensitive information, or
+  point `LLM_BASE_URL` at a self-hosted endpoint.
+- **The sample report is synthetic**: `examples/sample-report.md` was generated with FakeGitHub
+  and a rule-based LLM; it contains no real users, repositories, or issues.
 
 ---
 
-## 13. 许可证与贡献
+## 13. License and contributing
 
-- 代码采用 [MIT License](LICENSE)；第三方依赖遵循各自许可证。
-- 贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-- 安全问题请走 [SECURITY.md](SECURITY.md) 的私密渠道，不要开公开 Issue。
-- 提交前请跑：
+- Code is released under the [MIT License](LICENSE); third-party dependencies keep their own licenses.
+- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md); code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- Report security issues privately via [SECURITY.md](SECURITY.md); do not open a public issue.
+- Before submitting:
 
   ```bash
   python scripts/preflight.py
@@ -379,9 +430,9 @@ docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md PROVIDERS.md SECURIT
 
 ---
 
-## 14. 参考
+## 14. References
 
 - [LangGraph StateGraph](https://reference.langchain.com/python/langgraph/graph/state/StateGraph)
 - [GitHub REST Issues API](https://docs.github.com/en/rest/issues/issues)
-- [DeepSeek API / JSON 输出](https://api-docs.deepseek.com/guides/json_mode/)
+- [DeepSeek API / JSON mode](https://api-docs.deepseek.com/guides/json_mode/)
 - [OWASP LLM Top 10](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
