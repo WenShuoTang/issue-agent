@@ -182,6 +182,17 @@ class AgentNodes:
         runner.__name__ = name
         return runner
 
+    def _act_tools(self, state: AgentState) -> set[str]:
+        """工具渐进披露：第一轮只给检索类工具，拿到证据后才开放 get_file。
+
+        与 Skill 的"按需加载"思路一致：减少模型在信息不足时乱猜文件路径，
+        也缩小单轮可调用的工具面。
+        """
+        allowed = set(ACT_TOOLS)
+        if state.get("rounds", 0) < 1 and not state.get("force_query"):
+            allowed.discard("get_file")
+        return allowed
+
     # ------------------------------------------------------------------ ingest
     def ingest(self, state: AgentState) -> dict:
         started = time.monotonic()
@@ -344,7 +355,8 @@ class AgentNodes:
             decision = ActionDecision(thought="评估节点要求补充检索", action="search_issues",
                                       args={"query": forced}, reason="forced_by_assess")
         else:
-            catalog = self.rt.registry.prompt_catalog(ACT_TOOLS)
+            allowed_tools = self._act_tools(state)
+            catalog = self.rt.registry.prompt_catalog(allowed_tools)
             user = (
                 f"## 目标 Issue\n{ctx.render_issue_card(state['issue'], body_chars=1800)}\n\n"
                 f"## 排障计划\n核心问题：{state.get('plan', {}).get('focus', '')}\n"
@@ -358,8 +370,8 @@ class AgentNodes:
             )
             decision = self.rt.llm.chat_action(
                 ACT_SYSTEM.replace("{catalog}", catalog), user,
-                tool_specs=self.rt.registry.openai_tools(ACT_TOOLS),
-                allowed=ACT_TOOLS, max_tokens=400)
+                tool_specs=self.rt.registry.openai_tools(allowed_tools),
+                allowed=allowed_tools, max_tokens=400)
 
         action = decision.action if decision.action in ACT_TOOLS else "finish"
         if action == "finish":

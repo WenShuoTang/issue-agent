@@ -142,6 +142,10 @@ class HybridIndex:
     k1: float = 1.5
     b: float = 0.75
     rrf_k: int = 60
+    rrf_weight: float = 0.50
+    bm25_weight: float = 0.25
+    dense_weight: float = 0.25
+    title_boost_weight: float = 0.08
     chunks: list[Chunk] = field(default_factory=list)
     _bm25: BM25 = field(default_factory=BM25)
     _vectors: list[list[float]] = field(default_factory=list)
@@ -192,11 +196,11 @@ class HybridIndex:
             rrf = (1.0 / (self.rrf_k + bm25_rank[index])
                    + 1.0 / (self.rrf_k + dense_rank[index]))
             title_tokens = set(tokenize(chunk.title))
-            title_boost = 0.08 if query_tokens & title_tokens else 0.0
-            # 融合权重来自离线评测调参（见 docs/EVALUATION.md），不是拍脑袋。
-            score = (0.50 * (rrf / 0.033)
-                     + 0.25 * (bm25_scores[index] / bm25_max)
-                     + 0.25 * (dense_scores[index] / dense_max)
+            title_boost = self.title_boost_weight if query_tokens & title_tokens else 0.0
+            # 默认权重是经验值；BM25-only / hybrid 的对照脚本见 eval/retrieval_bench.py。
+            score = (self.rrf_weight * (rrf / 0.033)
+                     + self.bm25_weight * (bm25_scores[index] / bm25_max)
+                     + self.dense_weight * (dense_scores[index] / dense_max)
                      + title_boost)
             scored.append(ScoredChunk(chunk=chunk, score=score,
                                       bm25=bm25_scores[index], dense=dense_scores[index],

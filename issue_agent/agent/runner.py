@@ -25,7 +25,8 @@ from ..memory.store import MemoryStore, new_session_id
 from ..obs.logs import get_logger
 from ..obs.metrics import METRICS
 from ..obs.tracing import Tracer
-from ..rag.index import HashingEmbedder, HybridIndex
+from ..rag.embed import build_embedder
+from ..rag.index import HybridIndex
 from ..results import ResultStore, SingleFlight, analysis_key
 from ..security.guard import redact, sanitize_untrusted
 from ..security.policy import ToolPolicy
@@ -278,7 +279,7 @@ class AgentRunner:
         runtime = Runtime(
             settings=settings, llm=llm, registry=registry, memory=self.memory,
             tracer=tracer, budget=budget, policy=ToolPolicy(),
-            index=HybridIndex(embedder=HashingEmbedder(settings.embedding_dim)),
+            index=HybridIndex(embedder=build_embedder(settings)),
         )
         build_kb_tools(registry, runtime)
         return runtime

@@ -45,6 +45,19 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(record["status"], "succeeded")
 
 
+class TestRetrievalBench(unittest.TestCase):
+    def test_retrieval_benchmark(self):
+        from issue_agent.eval.retrieval_bench import run as run_bench
+
+        with tempfile.TemporaryDirectory() as folder:
+            settings = make_settings(folder)
+            report = run_bench(settings=settings, emit=lambda *_: None)
+            self.assertTrue((settings.data_dir / "eval" / "retrieval-bench.json").exists())
+        self.assertEqual(set(report["modes"]), {"bm25", "hybrid", "hybrid+title"})
+        for mode in report["modes"].values():
+            self.assertIsNotNone(mode["recall_at_5_mean"])
+
+
 class TestOfflineRunner(unittest.TestCase):
     def test_offline_run_passes_and_writes_report(self):
         with tempfile.TemporaryDirectory() as folder:

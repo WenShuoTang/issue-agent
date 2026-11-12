@@ -303,6 +303,32 @@ class TestAgentGraph(unittest.TestCase):
                 runner.close()
 
 
+class TestProgressiveDisclosure(unittest.TestCase):
+    def test_file_tool_hidden_until_evidence_collected(self):
+        class RecordingLLM(HeuristicLLM):
+            def __init__(self):
+                super().__init__()
+                self.allowed_calls = []
+
+            def chat_action(self, system, user, *, tool_specs, allowed,
+                            max_tokens=500, temperature=None):
+                self.allowed_calls.append(set(allowed))
+                return super().chat_action(system, user, tool_specs=tool_specs,
+                                           allowed=allowed, max_tokens=max_tokens,
+                                           temperature=temperature)
+
+        llm = RecordingLLM()
+        with tempfile.TemporaryDirectory() as folder:
+            runner = _runner(folder, llm)
+            try:
+                result = runner.run(REPO, ISSUE, tenant="t1")
+            finally:
+                runner.close()
+        self.assertEqual(result["status"], "succeeded")
+        self.assertNotIn("get_file", llm.allowed_calls[0])
+        self.assertTrue(any("get_file" in allowed for allowed in llm.allowed_calls[1:]))
+
+
 class TestResultReuse(unittest.TestCase):
     """公网部署时最常见的两个问题：重复请求与缓存击穿。"""
 

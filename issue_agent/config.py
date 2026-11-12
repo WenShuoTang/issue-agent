@@ -119,6 +119,11 @@ class Settings:
     retrieval_top_k: int = 8
     rerank_top_k: int = 6
     embedding_dim: int = 512
+    embedding_provider: str = "hashing"  # hashing | openai
+    embedding_model: str = "text-embedding-3-small"
+    embedding_base_url: str = "https://api.openai.com/v1"
+    embedding_api_key: str = ""
+    embedding_timeout: float = 20.0
     memory_recall_k: int = 3
 
     # ---- API / 安全 ----
@@ -145,6 +150,10 @@ class Settings:
             raise ConfigError(f"LLM_BASE_URL 必须是 http(s) 地址，当前为 {self.llm_base_url!r}")
         if self.llm_kind not in {"openai", "anthropic"}:
             raise ConfigError(f"不支持的 LLM 协议类型：{self.llm_kind}")
+        if self.embedding_provider not in {"hashing", "openai"}:
+            raise ConfigError("EMBEDDING_PROVIDER 只能是 hashing 或 openai")
+        if self.embedding_provider == "openai" and not self.embedding_api_key:
+            raise ConfigError("EMBEDDING_PROVIDER=openai 需要 EMBEDDING_API_KEY 或 OPENAI_API_KEY")
         if self.max_rounds < 1 or self.max_steps < 1:
             raise ConfigError("MAX_ROUNDS / MAX_STEPS 必须 >= 1")
         if self.is_prod:
@@ -185,7 +194,10 @@ class Settings:
                 "wall_clock_budget_s": self.wall_clock_budget_s,
             },
             "retrieval": {"top_k": self.retrieval_top_k, "rerank_top_k": self.rerank_top_k,
-                          "embedding_dim": self.embedding_dim},
+                          "embedding_dim": self.embedding_dim,
+                          "embedding_provider": self.embedding_provider,
+                          "embedding_model": self.embedding_model,
+                          "embedding_configured": bool(self.embedding_api_key)},
             "auth_required": bool(self.api_keys),
             "result_cache": {"enabled": self.result_cache_enabled,
                              "ttl_seconds": self.result_cache_ttl_s},
@@ -297,6 +309,11 @@ def load_settings(env_path: Path | None = None, **overrides) -> Settings:
         retrieval_top_k=_env_int("RETRIEVAL_TOP_K", 8),
         rerank_top_k=_env_int("RERANK_TOP_K", 6),
         embedding_dim=_env_int("EMBEDDING_DIM", 512),
+        embedding_provider=_env_str("EMBEDDING_PROVIDER", "hashing").lower(),
+        embedding_model=_env_str("EMBEDDING_MODEL", "text-embedding-3-small"),
+        embedding_base_url=_env_str("EMBEDDING_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+        embedding_api_key=_env_str("EMBEDDING_API_KEY") or _env_str("OPENAI_API_KEY"),
+        embedding_timeout=_env_float("EMBEDDING_TIMEOUT", 20.0),
         memory_recall_k=_env_int("MEMORY_RECALL_K", 3),
         env=_env_str("ISSUE_AGENT_ENV", "dev").lower(),
         api_keys=_parse_api_keys(_env_str("API_KEYS")),
