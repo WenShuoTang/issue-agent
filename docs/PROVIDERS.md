@@ -113,6 +113,24 @@ Content-Type: application/json
 > `tenant + provider + model + Prompt 指纹 + GitHub 凭据范围` 复用；
 > 同一 tenant、同一凭据的重复请求会命中缓存，不同 Token 不会互相复用。
 
+### 2.2 Embedding 模型（可选）
+
+默认 `EMBEDDING_PROVIDER=hashing`：确定性哈希向量，离线可复现、零外部调用。
+要提升同义改写召回，可切到任意 OpenAI 兼容的 `/embeddings` 端点（OpenAI、bge 服务、
+SiliconFlow 等）：
+
+```ini
+EMBEDDING_PROVIDER=openai
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_API_KEY=sk-...
+```
+
+- 配置后证据入库时调用 Embedding，检索使用余弦相似度；第一次调用失败会降级为哈希向量
+  （整次运行保持一致，避免维度混用）。
+- 换 Embedding 后重跑 `python -m issue_agent.eval.retrieval_bench`，对比 BM25 / hybrid 的召回。
+- Key 只发送给配置的 Embedding 端点，不写数据库、日志或 trace。
+
 ---
 
 ## 3. 各厂商 Key 申请步骤

@@ -144,15 +144,16 @@ python -m issue_agent.eval.runner --live --dataset issue_agent/eval/golden_live.
 每组记录：Recall@5、MRR、平均检索耗时、平均证据数。**必须固定**同一个数据集与同一模型
 （或同一离线替身），否则比较无效。
 
-关于"真 Embedding"：当前默认是哈希向量（离线可复现）。替换步骤：
+关于"真 Embedding"：当前默认是哈希向量（离线可复现）。不改代码，配置即可切换：
 
-```python
-# issue_agent/rag/index.py
-class EmbeddingProvider:            # 新增
-    def embed(self, text: str) -> list[float]: ...
-
-# HybridIndex(embedder=EmbeddingProvider()) 即可，其余代码不动
+```ini
+EMBEDDING_PROVIDER=openai
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_API_KEY=sk-...
 ```
+
+然后重跑 `python -m issue_agent.eval.retrieval_bench` 做 BM25 vs hybrid 对照。
 
 预期收益：同义改写（"超时" ↔ "timeout"、"认证失败" ↔ "401"）的召回会明显提升；
 代价是每次检索一次网络调用（延迟 + 成本），需要缓存向量。这个对比**目前没有做过**，
@@ -187,3 +188,51 @@ class EmbeddingProvider:            # 新增
 - [ ] 成本单价是否用了真实账单，而不是猜的？
 - [ ] 标注是否由被测系统自己生成（污染）？
 - [ ] 是否统计了"空结果/降级"的比例，而不只是成功案例？
+
+---
+
+## 9. 检索模式对照（离线）
+
+```bash
+python -m issue_agent.eval.retrieval_bench
+```
+
+在 9 条合成候选文档、3 个有标注样本上跑三种配置：
+
+| 模式 | Recall@5 | MRR | 平均耗时 |
+|---|---|---|---|
+| BM25-only | 1.000 | 0.833 | ~10ms |
+| Hybrid（BM25 + 哈希向量 + RRF） | 1.000 | 0.833 | ~5ms |
+| Hybrid + 标题加权 | 1.000 | 0.833 | ~5ms |
+
+结论：fixture 太小，三种模式没有差异；这组数字只能验证脚本可复现，**不能**证明混合检索更优，
+也不能用来解释默认权重。要得到有意义的权重依据，需要真实标注集 + 真 Embedding：
+
+```bash
+EMBEDDING_PROVIDER=openai python -m issue_agent.eval.retrieval_bench
+```
+
+代码中的默认权重（0.50/0.25/0.25 + 0.08 标题加成）因此标注为**经验值**，不是调参结论。
+
+## 10. 真实评测集与批量跑批
+
+`issue_agent/eval/golden_live.jsonl` 收录了 30 个公开 Issue（来自 8 个仓库），用于真实
+端到端评测。当前状态：**30 条均待人工标注** `relevant_issue_numbers`（字段
+`needs_labeling: true`）。
+
+```bash
+python -m issue_agent.eval.live_batch --dry-run        # 检查数据集，不调用 API
+python -m issue_agent.eval.live_batch --limit 10       # 小批量真实跑
+```
+
+跑批输出每个样本的状态、耗时、Token、引用数与 Recall@5，并汇总成功率、降级率、失败率、
+均值 Token、P50/P95 延迟。真实跑批会产生 API 费用，仓库不预置跑批结果；简历中的
+成本/稳定性数字必须来自你自己的实际跑批。
+
+## 11. Badcase 记录
+
+| # | Badcase | 根因 | 处理 | 回归 |
+|---|---|---|---|---|
+| 1 | 真实 Issue `idosal/git-mcp#214`：8 次 LLM 预算耗尽，输出降级报告 | 默认预算过紧 + 轮次耗尽后仍尝试检索 | 默认预算 8→16；轮次用尽直接收尾；无草稿时输出确定性降级报告 | `test_budget_exceeded_returns_partial`、`test_resume_after_budget_failure_completes` |
+| 2 | `config-003` 离线 Recall@5=0.5（配置键改名类查询漏召回） | 哈希向量抓不住同义改写 + 规则型替身抽词差 | 保留为已知限制；提供 `retrieval_bench` 与 `EMBEDDING_PROVIDER=openai` 做对照 | `test_retrieval_benchmark` |
+

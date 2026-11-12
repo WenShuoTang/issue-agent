@@ -19,6 +19,21 @@
 SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。单机运行不需要 Docker、Redis、
 向量数据库或 GPU；Docker 配置仅作可选部署方式。
 
+## 30 秒跑通
+
+![界面预览](docs/assets/ui-preview.png)
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -r requirements.txt
+python -m issue_agent.cli serve --host 127.0.0.1 --port 8000
+```
+
+打开 <http://127.0.0.1:8000>，选供应商、填模型 Key（可选填 GitHub Token），直接分析。
+不需要改代码或 `.env`。服务端默认值、Docker、CLI 与 BYOK 细节见
+[配置](#4-配置)。
+
 ---
 
 ## 1. 业务问题与闭环
@@ -104,9 +119,9 @@ SQLite（缓存·记忆·检查点）/ 原生 HTML+SSE**。单机运行不需要
 
 ---
 
-## 4. 快速开始
+## 4. 配置
 
-### 通用（Python >= 3.10）
+### 安装与启动
 
 ```bash
 python -m venv .venv
@@ -167,10 +182,6 @@ LLM_MODEL=gpt-4o-mini
 
 ### 4.3 自带凭据（BYOK）
 
-![UI preview](docs/assets/ui-preview.png)
-
-<sub>界面示意图：左栏选择供应商并填写模型 Key 与 GitHub Token，中栏实时执行轨迹，右栏带引用的报告。</sub>
-
 页面上的两个凭据都只用于当次分析，**不落盘、不进日志、不进 trace**：
 
 1. **大模型供应商**：选择厂商（留空用服务器默认）；
@@ -199,6 +210,21 @@ POST /api/v1/analyze
 - 服务端限流仍然生效，防止 BYOK 被用来刷服务器资源。
 
 ---
+
+### 4.4 Embedding 模型（可选）
+
+默认 `EMBEDDING_PROVIDER=hashing`：确定性哈希向量，离线可复现、零外部依赖。
+要提升同义改写召回，可切到任意 OpenAI 兼容的 `/embeddings` 端点：
+
+```ini
+EMBEDDING_PROVIDER=openai
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_API_KEY=sk-...
+```
+
+配置后用 `python -m issue_agent.eval.retrieval_bench` 对比 BM25 / hybrid 的召回。
+Key 只发送到配置的 Embedding 端点，不写数据库、日志或 trace。
 
 ### Docker（可选）
 
@@ -254,14 +280,29 @@ python -m issue_agent.eval.runner --offline
 |---|---|---|
 | Recall@5 | 0.833 | 标注的相关历史 Issue 进入前 5 的比例 |
 | MRR | 1.000 | 第一个相关结果的排名倒数 |
-| 引用有效率 | 1.000 | 引用 ID 必须真实存在（幻觉引用 = 0） |
+| 引用有效率 | 1.000 | 引用 ID 必须真实存在（结构性校验，不代表支持结论） |
 | 引用覆盖率 | 1.000 | 有证据支撑的假设比例 |
 | P50 / P95 延迟 | ≈1.0s / 1.2s | 含本地 SQLite 开销，不含真实模型推理 |
-| 测试 | 103 个离线用例 | `python -m unittest discover -s tests -t .` |
+| 测试 | 110 个离线用例 | `python -m unittest discover -s tests -t .` |
 
 真实链路冒烟（`idosal/git-mcp#214`，真实 GitHub + DeepSeek）：一次成功运行 **53s / 29.4k token /
 14 次 LLM 调用 / 8 次工具调用 / 2 轮检索**，期间自动触发一次依据性重写。
 完整报告见 [examples/sample-report.md](examples/sample-report.md)。
+
+检索模式对照（离线，9 条合成文档、3 个有标注样本）：
+
+```bash
+python -m issue_agent.eval.retrieval_bench
+```
+
+BM25-only、hybrid、hybrid+标题加权在这组 fixture 上都是 Recall@5 1.000 / MRR 0.833；
+样本太小，无法证明默认权重更优，所以 0.50/0.25/0.25（+0.08 标题）在代码里标注为经验值，
+而不是调参结论。真实 Embedding 的对照用
+`EMBEDDING_PROVIDER=openai python -m issue_agent.eval.retrieval_bench`。
+
+真实端到端的批量统计：`issue_agent/eval/golden_live.jsonl` 收录 30 个公开 Issue（标注待补），
+`python -m issue_agent.eval.live_batch --dry-run` 检查数据集，`--limit 10` 小批量真实跑，
+输出成功率、降级率、Token 与 P50/P95 延迟。
 
 > 这组数字**不能**当作产品效果对外宣称。真实效果必须用 `--live` 在公开 Issue 上跑，
 > 标注流程与门禁见 [docs/EVALUATION.md](docs/EVALUATION.md)。
@@ -289,6 +330,8 @@ python -m issue_agent.eval.runner --offline
 - **RAG 召回失败** → GitHub 搜索为空时用错误码/异常名回退检索（不花 LLM 调用），
   仍为空则换词重检索或明确写"证据不足"，绝不编造。
 - **多实例** → 当前限流/作业/缓存是单机实现，多实例需换 Redis，文档里明确标注而非假装解决。
+- **工具渐进披露** → 第一轮只暴露检索类工具，拿到证据或评估要求补检索后才开放 `get_file`。
+- **Embedding 后端** → 默认哈希向量；可切 OpenAI 兼容 `/embeddings`，无需改代码。
 
 ---
 
@@ -316,7 +359,8 @@ issue_agent/
   memory/       store.py                      # 会话/检查点/episode/fact/feedback
   agent/        state.py prompts.py context.py nodes.py graph.py report.py runner.py
   api/          app.py security.py jobs.py schemas.py
-  eval/         dataset.py metrics.py runner.py
+  eval/         dataset.py metrics.py runner.py retrieval_bench.py live_batch.py
+                golden_live.jsonl
   obs/          tracing.py metrics.py logs.py
   cli.py index.html
 tests/          test_foundation.py test_agent.py test_api.py test_eval.py
@@ -329,7 +373,8 @@ docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md PROVIDERS.md SECURIT
 
 1. 检索语料规模小（单次运行 < 30 篇文档），不是仓库级长期索引；跨 Issue 的长期知识靠 episode 记忆，
    不做全库 embedding。
-2. 默认向量是**确定性哈希向量**，抓不住真正的同义改写；生产应替换为 bge/text-embedding 模型。
+2. 默认向量是**确定性哈希向量**，抓不住真正的同义改写；设置 `EMBEDDING_PROVIDER=openai`
+   （或任意 OpenAI 兼容端点）即可切换真实 Embedding，离线默认保持零依赖。
 3. 上下文预算按字符而非 token 计算，中文长文本会低估 token 约 30%。
 4. 评论只取首尾，长线程中间的关键信息可能被跳过（报告里会提示）。
 5. 不做跨仓库检索；同一仓库内的历史 Issue 也可能命名不同、搜不到。

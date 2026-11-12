@@ -116,7 +116,13 @@ START → ingest → plan → act ──┐
 
 两种协议共用同一份 Schema、同一个注册表、同一套权限校验——协议只是传输层差异。
 
-### 4.3 工具清单
+### 4.3 工具渐进披露
+
+第一轮 `act` 只暴露检索类工具；拿到至少一轮证据（或 `assess` 明确要求补检索）后，
+才把 `get_file` 加入可选工具。作用与 Skill 的按需加载一致：减少模型在信息不足时
+猜测文件路径，也缩小单轮可调用的工具面。实现见 `nodes.py::_act_tools`。
+
+### 4.4 工具清单
 
 | 工具 | 说明 | 结果上限 |
 |---|---|---|
@@ -148,9 +154,10 @@ BM25（k1=1.5, b=0.75，标题加权）
   → 文档级去重（同一 Issue 只保留最高分块）
 ```
 
-为什么用哈希向量而不是真 Embedding：**离线可复现、零成本、无外部依赖**。
-它能抓词形与子词相似，抓不住真正的同义改写——这是明确记录的局限，不是隐藏的缺陷。
-替换点只有 `HashingEmbedder.embed`，生产接 bge / text-embedding-3 即可。
+为什么默认用哈希向量：**离线可复现、零成本、无外部依赖**。它能抓词形与子词相似，
+抓不住真正的同义改写——这是明确记录的局限。需要真实语义检索时设置
+`EMBEDDING_PROVIDER=openai`（配合 `EMBEDDING_BASE_URL / MODEL / API_KEY`），
+实现见 `rag/embed.py::OpenAICompatibleEmbedder`，无需改代码。
 
 ### 5.3 为什么还要 BM25
 
@@ -194,7 +201,14 @@ Prompt 里的每条证据都必须是 `[E<id>] 标题 / URL / 类型 / 正文`�
 
 ---
 
-### 5.4 召回兜底
+### 5.4 向量化后端
+
+默认使用确定性哈希向量（`EMBEDDING_PROVIDER=hashing`）：离线可复现、零成本。
+设置 `EMBEDDING_PROVIDER=openai` 后改用任意 OpenAI 兼容 `/embeddings` 端点，
+由 `rag/embed.py::OpenAICompatibleEmbedder` 负责批内缓存与失败降级（首次失败整次
+运行退回哈希，避免维度混用）。权重对照脚本：`python -m issue_agent.eval.retrieval_bench`。
+
+### 5.5 召回兜底
 
 GitHub 搜索对整句自然语言召回很差，对错误码/异常名命中率高。因此当 `search_issues`
 返回空时，节点会用 `build_fallback_query()` 从标题/正文抽取 `ReadTimeout`、`SEARCH_TIMEOUT`、

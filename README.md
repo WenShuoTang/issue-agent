@@ -23,6 +23,21 @@ GitHub REST API / SQLite (cache, memory, checkpoints) / plain HTML + SSE**.
 A single machine does not need Docker, Redis, a vector database, or a GPU; the Docker setup
 is only an optional deployment path.
 
+## Quick start (30 seconds)
+
+![UI preview](docs/assets/ui-preview.png)
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -r requirements.txt
+python -m issue_agent.cli serve --host 127.0.0.1 --port 8000
+```
+
+Open <http://127.0.0.1:8000>, pick a model provider, paste a model API key and (optionally)
+a GitHub token, then run an analysis. No `.env` edits or source changes are required.
+See [Configuration](#4-configuration) for server defaults, Docker, CLI, and BYOK details.
+
 ---
 
 ## 1. Problem and closed loop
@@ -111,9 +126,9 @@ execution trace, and cost metrics.
 
 ---
 
-## 4. Quick start
+## 4. Configuration
 
-### Requirements (Python >= 3.10)
+### Install and run
 
 ```bash
 python -m venv .venv
@@ -178,11 +193,6 @@ access.
 
 ### 4.3 Bring your own credentials (BYOK)
 
-![UI preview](docs/assets/ui-preview.png)
-
-<sub>UI mock: provider selection plus model key and GitHub token on the left, live trace in
-the middle, cited report on the right.</sub>
-
 Both credentials are used only for the current analysis. They are **not persisted, not
 logged, and not written to traces**:
 
@@ -215,6 +225,22 @@ Security constraints:
   cannot leak to permission B.
 - Selecting another provider without a key returns **400**, not 500.
 - Server-side rate limits still apply; BYOK cannot be used to bypass them.
+
+### 4.4 Embedding model (optional)
+
+Default vectorizer is deterministic hashing (`EMBEDDING_PROVIDER=hashing`), which keeps the
+project offline and reproducible. To improve paraphrase recall, point it at any OpenAI-compatible
+`/embeddings` endpoint:
+
+```ini
+EMBEDDING_PROVIDER=openai
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_API_KEY=sk-...
+```
+
+Then compare retrieval modes with `python -m issue_agent.eval.retrieval_bench`. The key is sent
+only to the configured embedding endpoint and is never persisted or logged.
 
 ### Docker (optional)
 
@@ -273,14 +299,29 @@ validates the pipeline, not model quality):
 |---|---|---|
 | Recall@5 | 0.833 | share of labeled related issues in the top 5 |
 | MRR | 1.000 | reciprocal rank of the first relevant result |
-| Citation validity | 1.000 | cited IDs must exist (zero hallucinated citations) |
+| Citation validity | 1.000 | cited IDs must exist (structural check, not factual support) |
 | Citation coverage | 1.000 | share of hypotheses with at least one citation |
 | P50 / P95 latency | ~1.0s / 1.2s | includes local SQLite overhead, excludes real model inference |
-| Tests | 103 offline cases | `python -m unittest discover -s tests -t .` |
+| Tests | 110 offline cases | `python -m unittest discover -s tests -t .` |
 
 Live smoke test (`idosal/git-mcp#214`, real GitHub + DeepSeek): one successful run used
 **53s / 29.4k tokens / 14 LLM calls / 8 tool calls / 2 retrieval rounds** and triggered one
 groundedness rewrite. See [examples/sample-report.md](examples/sample-report.md).
+
+Retrieval mode comparison (offline, 9-document synthetic corpus, 3 labeled cases):
+
+```bash
+python -m issue_agent.eval.retrieval_bench
+```
+
+BM25-only, hybrid, and hybrid+title all score Recall@5 1.000 / MRR 0.833 on this fixture; it is
+too small to justify the default weights, so 0.50/0.25/0.25 (+0.08 title) are documented as
+heuristics rather than tuned values. Real embeddings can be compared with
+`EMBEDDING_PROVIDER=openai python -m issue_agent.eval.retrieval_bench`.
+
+For end-to-end statistics, `issue_agent/eval/golden_live.jsonl` contains 30 public issues
+(labels pending). `python -m issue_agent.eval.live_batch --dry-run` inspects the dataset and
+`--limit 10` runs a real batch, reporting success/degrade rate, tokens, and P50/P95 latency.
 
 > These numbers must **not** be presented as product quality. Real quality requires `--live`
 > runs on public issues; the labeling workflow and gates are in
@@ -323,6 +364,10 @@ The full list (50+ items with root cause, fix, code location, and residual risk)
   "insufficient evidence" — never invent a cause.
 - **Multiple replicas** → rate limiting, jobs, and event buffers are single-process; production
   needs Redis. This is documented, not hand-waved.
+- **Progressive tool disclosure** → the first `act` round exposes retrieval tools only;
+  `get_file` appears after evidence is collected or assessment asks for it.
+- **Embedding backend** → hashing is the offline default; an OpenAI-compatible `/embeddings`
+  provider can be enabled without code changes.
 
 ---
 
@@ -354,7 +399,8 @@ issue_agent/
   memory/       store.py                      # sessions, checkpoints, episodes, facts, feedback
   agent/        state.py prompts.py context.py nodes.py graph.py report.py runner.py
   api/          app.py security.py jobs.py schemas.py
-  eval/         dataset.py metrics.py runner.py
+  eval/         dataset.py metrics.py runner.py retrieval_bench.py live_batch.py
+                golden_live.jsonl
   obs/          tracing.py metrics.py logs.py
   cli.py index.html
 tests/          test_foundation.py test_agent.py test_api.py test_eval.py test_providers.py
@@ -368,7 +414,8 @@ docs/           ARCHITECTURE.md PRODUCTION.md EVALUATION.md PROVIDERS.md SECURIT
 1. The retrieval corpus is small (fewer than 30 documents per run); it is not a repository-wide
    long-term index. Cross-issue knowledge relies on episodic memory, not full-corpus embeddings.
 2. The default vectorizer is a **deterministic hashed vector**; it cannot capture true paraphrase.
-   Production should use bge/text-embedding models.
+   Set `EMBEDDING_PROVIDER=openai` (or any OpenAI-compatible endpoint) for real embeddings; the
+   offline default stays dependency-free.
 3. The context budget is character-based, not tokenizer-based; long Chinese text underestimates
    tokens by roughly 30%.
 4. Comments are sampled from the head and tail; information in the middle of long threads may be
