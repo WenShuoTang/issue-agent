@@ -300,7 +300,7 @@ BM25-only、hybrid、hybrid+标题加权在这组 fixture 上都是 Recall@5 1.0
 而不是调参结论。真实 Embedding 的对照用
 `EMBEDDING_PROVIDER=openai python -m issue_agent.eval.retrieval_bench`。
 
-真实端到端的批量统计：`issue_agent/eval/golden_live.jsonl` 收录 30 个公开 Issue（标注待补），
+真实端到端的批量统计：`issue_agent/eval/golden_live.jsonl` 收录 20 个公开 Issue（4 条已标注，16 条待补），
 `python -m issue_agent.eval.live_batch --dry-run` 检查数据集，`--limit 10` 小批量真实跑，
 输出成功率、降级率、Token 与 P50/P95 延迟。
 

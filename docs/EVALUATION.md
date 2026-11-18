@@ -216,9 +216,9 @@ EMBEDDING_PROVIDER=openai python -m issue_agent.eval.retrieval_bench
 
 ## 10. 真实评测集与批量跑批
 
-`issue_agent/eval/golden_live.jsonl` 收录了 30 个公开 Issue（来自 8 个仓库），用于真实
-端到端评测。当前状态：**30 条均待人工标注** `relevant_issue_numbers`（字段
-`needs_labeling: true`）。
+`issue_agent/eval/golden_live.jsonl` 收录了 20 个公开 Issue（来自 7 个仓库），用于真实
+端到端评测。当前状态：**4 条已标注** `relevant_issue_numbers`（`needs_labeling: false`），
+其余 **16 条仍待人工标注**（`needs_labeling: true`）。
 
 ```bash
 python -m issue_agent.eval.live_batch --dry-run        # 检查数据集，不调用 API
