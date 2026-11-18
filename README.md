@@ -319,8 +319,8 @@ too small to justify the default weights, so 0.50/0.25/0.25 (+0.08 title) are do
 heuristics rather than tuned values. Real embeddings can be compared with
 `EMBEDDING_PROVIDER=openai python -m issue_agent.eval.retrieval_bench`.
 
-For end-to-end statistics, `issue_agent/eval/golden_live.jsonl` contains 30 public issues
-(labels pending). `python -m issue_agent.eval.live_batch --dry-run` inspects the dataset and
+For end-to-end statistics, `issue_agent/eval/golden_live.jsonl` contains 20 public issues
+(4 labeled, 16 still pending). `python -m issue_agent.eval.live_batch --dry-run` inspects the dataset and
 `--limit 10` runs a real batch, reporting success/degrade rate, tokens, and P50/P95 latency.
 
 > These numbers must **not** be presented as product quality. Real quality requires `--live`

@@ -6,7 +6,7 @@
 用法：
     python -m issue_agent.eval.live_batch --dry-run
     python -m issue_agent.eval.live_batch --limit 10
-    python -m issue_agent.eval.live_batch --limit 30 --dataset issue_agent/eval/golden_live.jsonl
+    python -m issue_agent.eval.live_batch --limit 20 --dataset issue_agent/eval/golden_live.jsonl
 
 注意：每条都会真实调用 GitHub 与 LLM，会产生费用；建议先用 --limit 小批量试跑。
 """
